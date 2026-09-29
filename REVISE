@@ -1,0 +1,208 @@
+function reviseActivity() {
+ 
+  const lock = LockService.getDocumentLock();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+ 
+  let hasLock = false;
+ 
+  try {
+ 
+    // ============================================================
+    // LOCK
+    // ============================================================
+    hasLock = lock.tryLock(30000);
+ 
+    if (!hasLock) {
+      ui.alert(
+        "⏳ Another user is currently revising or submitting.\n" +
+        "Please try again in a few seconds."
+      );
+      return;
+    }
+ 
+    const form = ss.getActiveSheet();
+    const db = ss.getSheetByName("DATABASE");
+ 
+    // ============================================================
+    // VALIDATE SHEET
+    // ============================================================
+    const sheetName = form.getName();
+ 
+    if (sheetName !== "FORM" && sheetName !== "FORM 2") {
+      ui.alert("⚠️ Revise can only be used in FORM or FORM 2.");
+      return;
+    }
+ 
+    // ============================================================
+    // GET ACTIVITY TITLE  (FORM B2)
+    // ============================================================
+    const title = (form.getRange("B2").getValue() || "")
+      .toString()
+      .trim();
+ 
+    if (!title) {
+      ui.alert("⚠️ Please select an Activity Title in B2 first.");
+      return;
+    }
+ 
+    showProgress("🔄 Restoring activity...");
+ 
+    // ============================================================
+    // READ DATABASE
+    //
+    // C = FUND                  index 2
+    // D = ACTIVITY TITLE        index 3
+    // E = TARGET MONTH          index 4
+    // F = DATE OF DELIVERY      index 5
+    // I = VENUE                 index 8
+    // J = BUDGET                index 9
+    // K = GAD/IPs               index 10
+    // L = ADMIN COST            index 11
+    // M = NET AMOUNT            index 12
+    // N = CATEGORY              index 13
+    // O = ITEM DESCRIPTION      index 14
+    // R = QUANTITY              index 17
+    // T = REMARKS               index 19
+    // ============================================================
+    const dbData = db.getDataRange().getValues();
+ 
+    const match = dbData.filter((r, i) =>
+      i > 0 &&
+      r[3] !== "" &&
+      r[3] !== null &&
+      r[3].toString().trim() === title
+    );
+ 
+    if (match.length === 0) {
+      hideProgress("❌ No matching activity found.");
+      ui.alert("❌ No matching activity found in DATABASE.");
+      return;
+    }
+ 
+    // ============================================================
+    // RESTORE HEADER FIELDS  (first match)
+    //
+    // B2 (title) is NOT written: it is the selector we just read,
+    // and rewriting it could fail its own validation if the
+    // DATABASE text has stray spaces.
+    // ============================================================
+    const m = match[0];
+ 
+    const headerMap = {
+      "B1": m[2],   // FUND
+      "B3": m[4],   // TARGET MONTH
+      "B4": m[5],   // DATE OF DELIVERY
+      "B5": m[8],   // VENUE
+      "B6": m[9],   // BUDGET
+      "B7": m[10],  // GAD/IPs
+      "B8": m[11],  // ADMIN COST
+      "B9": m[12]   // NET AMOUNT
+    };
+ 
+    Object.keys(headerMap).forEach(cell => {
+      form.getRange(cell).setValue(headerMap[cell] ?? "");
+    });
+ 
+    // ============================================================
+    // DETAIL ROWS  →  A Category, B Item, E Quantity, G Remarks
+    // (C = Unit, D = Unit Price, F = Total are NOT touched)
+    // ============================================================
+    const startRow = 14;
+ 
+    const rows = match.map(r => [
+      r[13],  // N → A CATEGORY
+      r[14],  // O → B ITEM DESCRIPTION
+      r[17],  // R → E QUANTITY
+      r[19]   // T → G REMARKS
+    ]).filter(row =>
+      row.some(v => v !== "" && v !== null && v !== undefined)
+    );
+ 
+    // ============================================================
+    // CLEAR A, B, E, G  +  OLD DROPDOWNS IN B
+    //
+    // Clearing the validations is what prevents:
+    // "The data you entered in cell B## violates the data
+    //  validation rules set on this cell."
+    // ============================================================
+    const numRows = form.getMaxRows() - startRow + 1;
+ 
+    if (numRows >= 1) {
+      form.getRange(startRow, 1, numRows, 1).clearContent();          // A
+      form.getRange(startRow, 2, numRows, 1).clearContent();          // B
+      form.getRange(startRow, 2, numRows, 1).clearDataValidations();  // B dropdowns
+      form.getRange(startRow, 5, numRows, 1).clearContent();          // E
+      form.getRange(startRow, 7, numRows, 1).clearContent();          // G
+    }
+ 
+    // ============================================================
+    // WRITE VALUES (no dropdowns exist now, so nothing can reject them)
+    // ============================================================
+    const n = rows.length;
+ 
+    if (n > 0) {
+      form.getRange(startRow, 1, n, 1).setValues(rows.map(r => [r[0]])); // A
+      form.getRange(startRow, 2, n, 1).setValues(rows.map(r => [r[1]])); // B
+      form.getRange(startRow, 5, n, 1).setValues(rows.map(r => [r[2]])); // E
+      form.getRange(startRow, 7, n, 1).setValues(rows.map(r => [r[3]])); // G
+    }
+ 
+    // ============================================================
+    // REBUILD THE ITEM DROPDOWN FOR EACH RESTORED ROW
+    //
+    // setValue() does not fire onEdit, so we do it here.
+    // keepValue keeps the item we just wrote. If an item no longer
+    // exists in PRICES it stays in the cell, flagged as invalid,
+    // instead of crashing the whole restore.
+    // ============================================================
+    if (n > 0) {
+      const pricesData = getPricesData_(ss);
+ 
+      for (let i = 0; i < n; i++) {
+        setItemDropdownForRow(form, startRow + i, {
+          pricesData: pricesData,
+          keepValue: true
+        });
+      }
+    }
+ 
+    // ============================================================
+    // RESTORE DEPENDENT FORMULAS (FORM only, same as onEdit)
+    // ============================================================
+    if (sheetName === "FORM") {
+      applyFormFormulas_(form);
+    }
+ 
+    // ============================================================
+    // UX
+    // ============================================================
+    form.activate();
+    form.getRange("A" + startRow).activate();
+ 
+    SpreadsheetApp.flush();
+ 
+    hideProgress("✅ Activity restored successfully!");
+ 
+    ss.toast(
+      "📄 Activity data restored and ready for revision!",
+      "Restored",
+      5
+    );
+ 
+  } catch (err) {
+ 
+    Logger.log(err && err.stack ? err.stack : err);
+ 
+    try { hideProgress("❌ Restore failed."); } catch (ignore) {}
+ 
+    ui.alert("❌ Could not restore the activity:\n" + err.message);
+ 
+  } finally {
+ 
+    // ALWAYS RELEASE THE LOCK (only if we actually got it)
+    if (hasLock) lock.releaseLock();
+  }
+}
+ 
+ 
