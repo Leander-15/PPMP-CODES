@@ -1,0 +1,930 @@
+function generatePRCatering() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // =========================================================
+  // UPDATE LINKS
+  // B5 = PR TEMPLATE SPREADSHEET ID
+  // B8 = DESTINATION FOLDER ID
+  // =========================================================
+
+  const updateLinksSheet =
+    ss.getSheetByName("UPDATE LINKS");
+
+  if (!updateLinksSheet) {
+    throw new Error(
+      'Sheet "UPDATE LINKS" was not found.'
+    );
+  }
+
+  const PR_GOODS_TEMPLATE_ID =
+    updateLinksSheet
+      .getRange("B5")
+      .getDisplayValue()
+      .trim();
+
+  const DESTINATION_FOLDER_ID =
+    updateLinksSheet
+      .getRange("B8")
+      .getDisplayValue()
+      .trim();
+
+  // =========================================================
+  // VALIDATE UPDATE LINKS
+  // =========================================================
+
+  if (!PR_GOODS_TEMPLATE_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "UPDATE LINKS!B5 is empty.\n\n" +
+      "Please enter the PR Template Spreadsheet ID."
+    );
+    return;
+  }
+
+  if (!DESTINATION_FOLDER_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "UPDATE LINKS!B8 is empty.\n\n" +
+      "Please enter the Destination Folder ID."
+    );
+    return;
+  }
+
+  const PR_GOODS_TEMPLATE_SHEET_NAME = "PR";
+
+  // =========================================================
+  // SOURCE SHEET = ACTIVE SHEET
+  // =========================================================
+
+  const sourceSheet = ss.getActiveSheet();
+
+  // =========================================================
+  // VALIDATE SOURCE DATA FIRST
+  // =========================================================
+
+  // B3 must not be empty
+  const designation =
+    sourceSheet.getRange("B3").getDisplayValue().trim();
+
+  if (!designation) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "B3 (Designation) is empty."
+    );
+    return;
+  }
+
+  // A6:G must contain data
+  const lastRow = sourceSheet.getLastRow();
+
+  if (lastRow < 6) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "No data found in A6:G."
+    );
+    return;
+  }
+
+  const sourceData =
+    sourceSheet
+      .getRange(
+        6,
+        1,
+        lastRow - 5,
+        7
+      )
+      .getValues();
+
+  const hasData =
+    sourceData.some(row =>
+      row.some(value =>
+        value !== "" &&
+        value !== null &&
+        value !== undefined
+      )
+    );
+
+  if (!hasData) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "A6:G is empty."
+    );
+    return;
+  }
+
+  // =========================================================
+  // REQUESTED BY / DESIGNATION / ABC / PURPOSE
+  // =========================================================
+
+  const requestedBy =
+    sourceSheet
+      .getRange("B2")
+      .getDisplayValue()
+      .trim();
+
+  const abc =
+    sourceSheet
+      .getRange("F8")
+      .getDisplayValue();
+
+  // PURPOSE IS IN G6
+  const purpose =
+    sourceSheet
+      .getRange("G6")
+      .getDisplayValue();
+
+  // =========================================================
+  // PR DATA FROM A:E
+  //
+  // A = UNIT
+  // B = ITEM DESCRIPTION
+  // C = QUANTITY
+  // D = UNIT COST
+  // E = TOTAL COST
+  // F = ABC
+  // G = PURPOSE
+  // =========================================================
+
+  const prRows =
+    sourceData
+      .map(row => [
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4]
+      ])
+      .filter(row =>
+        row.some(value =>
+          value !== "" &&
+          value !== null &&
+          value !== undefined
+        )
+      );
+
+  if (prRows.length === 0) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "No valid PR data was found in A6:E."
+    );
+    return;
+  }
+
+  // =========================================================
+  // DATABASE
+  // =========================================================
+
+  const databaseSheet =
+    ss.getSheetByName("DATABASE");
+
+  if (!databaseSheet) {
+    throw new Error(
+      'Sheet "DATABASE" was not found.'
+    );
+  }
+
+  const program =
+    databaseSheet
+      .getRange("C2")
+      .getDisplayValue()
+      .trim();
+
+  // =========================================================
+  // MONTH
+  // =========================================================
+  // =========================================================
+    // =========================================================
+  // MONTHS FROM SELECTED QUARTER
+  //
+  // B1 = SELECTED QUARTER
+  //
+  // E1 = 1st month of quarter
+  // E2 = 2nd month of quarter
+  // E3 = 3rd month of quarter
+  //
+  // Q1 = JANUARY / FEBRUARY / MARCH
+  // Q2 = APRIL / MAY / JUNE
+  // Q3 = JULY / AUGUST / SEPTEMBER
+  // Q4 = OCTOBER / NOVEMBER / DECEMBER
+  // =========================================================
+
+  const selectedQuarter =
+    sourceSheet
+      .getRange("B1")
+      .getDisplayValue()
+      .trim()
+      .toUpperCase();
+
+  const quarterMonths = {
+    "1ST QUARTER": ["JANUARY", "FEBRUARY", "MARCH"],
+    "2ND QUARTER": ["APRIL", "MAY", "JUNE"],
+    "3RD QUARTER": ["JULY", "AUGUST", "SEPTEMBER"],
+    "4TH QUARTER": ["OCTOBER", "NOVEMBER", "DECEMBER"]
+  };
+
+  const monthsForQuarter =
+    quarterMonths[selectedQuarter];
+
+  if (!monthsForQuarter) {
+
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "Invalid quarter selected in B1.\n\n" +
+      "Please select 1ST, 2ND, 3RD, or 4TH."
+    );
+
+    return;
+  }
+
+  const monthCheckboxes =
+    sourceSheet
+      .getRange("E1:E3")
+      .getValues()
+      .flat();
+
+  const selectedMonths = [];
+
+  for (let i = 0; i < 3; i++) {
+
+    if (monthCheckboxes[i] === true) {
+
+      selectedMonths.push(
+        monthsForQuarter[i]
+      );
+
+    }
+
+  }
+
+  if (selectedMonths.length === 0) {
+
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "Please select at least one month checkbox."
+    );
+
+    return;
+  }
+
+  const month =
+    selectedMonths.join(" ");
+  // =========================================================
+  // SECTION
+  // =========================================================
+
+  const section =
+    getPRSection_(requestedBy);
+
+  // =========================================================
+  // DESTINATION FOLDER
+  // =========================================================
+
+  const destinationFolder =
+    DriveApp.getFolderById(
+      DESTINATION_FOLDER_ID
+    );
+
+  // =========================================================
+  // TEMPLATE
+  // =========================================================
+
+  const templateFile =
+    DriveApp.getFileById(
+      PR_GOODS_TEMPLATE_ID
+    );
+
+  // =========================================================
+  // TIMESTAMP
+  // =========================================================
+
+  const timestamp =
+    Utilities.formatDate(
+      new Date(),
+      Session.getScriptTimeZone(),
+      "yyyyMMdd-HHmmss"
+    );
+
+  // =========================================================
+  // GENERATED FILE NAME
+  //
+  // PR CATERING [PROGRAM] [MONTH] [TIMESTAMP]
+  // =========================================================
+
+  const newFileName =
+    "PR CATERING " +
+    (program || "Program") +
+    " " +
+    month +
+    " " +
+    timestamp;
+
+  // =========================================================
+  // CREATE FILE
+  // =========================================================
+
+  const newFile =
+    templateFile.makeCopy(
+      newFileName,
+      destinationFolder
+    );
+
+  const prSpreadsheet =
+    SpreadsheetApp.openById(
+      newFile.getId()
+    );
+
+  // =========================================================
+  // PR SHEET
+  // =========================================================
+
+  const prSheet =
+    prSpreadsheet.getSheetByName(
+      PR_GOODS_TEMPLATE_SHEET_NAME
+    );
+
+  if (!prSheet) {
+    throw new Error(
+      'Template sheet "' +
+      PR_GOODS_TEMPLATE_SHEET_NAME +
+      '" was not found.'
+    );
+  }
+
+  // =========================================================
+  // REPLACE PLACEHOLDERS
+  // =========================================================
+
+  replaceAllPlaceholdersInSheet_(
+    prSheet,
+    {
+      "{{ABC}}": abc,
+      "{{PURPOSE}}": purpose,
+      "{{CHIEF}}": requestedBy,
+      "{{REQUESTED BY}}": requestedBy,
+      "{{DESIGNATION}}": designation,
+      "{{SECTION}}": section
+    }
+  );
+
+  // =========================================================
+  // FIND PR TEMPLATE ROW
+  // =========================================================
+
+  const templateInfo =
+    findPRGoodsTemplateRow_(
+      prSheet
+    );
+
+  if (!templateInfo || !templateInfo.row) {
+    throw new Error(
+      "PR template row containing " +
+      "{{ITEMNO}}, {{UNIT}}, {{ITEMDESC}}, {{QTY}}, " +
+      "{{UNITCOST}}, and {{TOTALCOST}} " +
+      "was not found."
+    );
+  }
+
+  const templateRow =
+    templateInfo.row;
+
+  const lastCol =
+    prSheet.getLastColumn();
+
+  const prRowsToWrite =
+    prRows.length;
+
+  // =========================================================
+  // INSERT ADDITIONAL ROWS
+  // =========================================================
+
+  if (prRowsToWrite > 1) {
+
+    prSheet.insertRowsAfter(
+      templateRow,
+      prRowsToWrite - 1
+    );
+
+    const sourceRange =
+      prSheet.getRange(
+        templateRow,
+        1,
+        1,
+        lastCol
+      );
+
+    const targetRange =
+      prSheet.getRange(
+        templateRow + 1,
+        1,
+        prRowsToWrite - 1,
+        lastCol
+      );
+
+    sourceRange.copyTo(
+      targetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false
+    );
+
+    sourceRange.copyTo(
+      targetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMULA,
+      false
+    );
+  }
+
+  // =========================================================
+  // WRITE PR DATA
+  // =========================================================
+
+  let itemCounter = 0;
+
+  for (
+    let i = 0;
+    i < prRows.length;
+    i++
+  ) {
+
+    const targetRow =
+      templateRow + i;
+
+    const row =
+      prRows[i];
+
+    const unit =
+      row[0];
+
+    const itemDesc =
+      row[1];
+
+    const qty =
+      row[2];
+
+    const unitCost =
+      row[3];
+
+    const totalCost =
+      row[4];
+
+    // =======================================================
+    // HEADER / TITLE ROW
+    // =======================================================
+
+    const isHeader =
+      isBlank_(qty) &&
+      isBlank_(totalCost);
+
+    if (isHeader) {
+
+      clearPRGoodsTemplateRow_(
+        prSheet,
+        targetRow,
+        templateInfo
+      );
+
+      if (templateInfo.itemDescCol) {
+
+        const titleCell =
+          prSheet.getRange(
+            targetRow,
+            templateInfo.itemDescCol
+          );
+
+        titleCell.setValue(
+          itemDesc
+        );
+
+        titleCell.setFontWeight(
+          "bold"
+        );
+
+        titleCell.setHorizontalAlignment(
+          "center"
+        );
+
+        titleCell.setVerticalAlignment(
+          "middle"
+        );
+      }
+
+      prSheet
+        .getRange(
+          targetRow,
+          1,
+          1,
+          lastCol
+        )
+        .setFontWeight(
+          "bold"
+        );
+
+      continue;
+    }
+
+    // =======================================================
+    // REGULAR ITEM
+    // =======================================================
+
+    itemCounter++;
+
+    if (templateInfo.itemNoCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.itemNoCol
+        )
+        .setValue(
+          itemCounter
+        );
+    }
+
+    if (templateInfo.unitCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.unitCol
+        )
+        .setValue(
+          unit
+        );
+    }
+
+    if (templateInfo.itemDescCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.itemDescCol
+        )
+        .setValue(
+          itemDesc
+        );
+    }
+
+    if (templateInfo.qtyCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.qtyCol
+        )
+        .setValue(
+          qty
+        );
+    }
+
+    if (templateInfo.unitCostCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.unitCostCol
+        )
+        .setValue(
+          unitCost
+        );
+    }
+
+    if (templateInfo.totalCostCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.totalCostCol
+        )
+        .setValue(
+          totalCost
+        );
+    }
+
+    prSheet
+      .getRange(
+        targetRow,
+        1,
+        1,
+        lastCol
+      )
+      .setFontWeight(
+        "normal"
+      );
+  }
+
+  // =========================================================
+  // FINISH
+  // =========================================================
+
+  SpreadsheetApp.flush();
+
+  // Clear B1 and B2 only
+  sourceSheet
+    .getRangeList([
+      "B1",
+      "B2"
+    ])
+    .clearContent();
+
+  // Reset month checkboxes
+  sourceSheet
+    .getRangeList([
+      "E1",
+      "E2",
+      "E3"
+    ])
+    .setValue(true);
+
+  // =========================================================
+  // SUCCESS MESSAGE
+  // =========================================================
+
+  SpreadsheetApp.getUi().alert(
+    "PR CATERING GENERATED." +
+    "\n\nFile: " +
+    newFile.getName() +
+    "\nFolder: " +
+    destinationFolder.getName() +
+    "\n\nPR Sheet: " +
+    PR_GOODS_TEMPLATE_SHEET_NAME +
+    "\nPR Items: " +
+    itemCounter +
+    "\nPR Headers: " +
+    (prRows.length - itemCounter)
+  );
+}
+
+
+// =========================================================
+// GET SECTION
+// =========================================================
+
+function getPRSection_(requestedBy) {
+
+  const name =
+    String(requestedBy || "")
+      .trim()
+      .toUpperCase();
+
+  if (
+    name === "EFREN C. MACARIO"
+  ) {
+    return "AFU";
+  }
+
+  if (
+    name === "HONEYLOU C. BASTASA"
+  ) {
+    return "ISS";
+  }
+
+  if (
+    name === "JERIC L. CABATAC"
+  ) {
+    return "PAS";
+  }
+
+  if (
+    name === "JHOYLIE MAE R. CAUMBAN"
+  ) {
+    return "CDMS";
+  }
+
+  return "";
+}
+
+
+// =========================================================
+// FIND PR TEMPLATE ROW
+// =========================================================
+
+function findPRGoodsTemplateRow_(sheet) {
+
+  const values =
+    sheet
+      .getDataRange()
+      .getDisplayValues();
+
+  for (
+    let r = 0;
+    r < values.length;
+    r++
+  ) {
+
+    const row =
+      values[r];
+
+    const info = {
+      row: r + 1
+    };
+
+    for (
+      let c = 0;
+      c < row.length;
+      c++
+    ) {
+
+      const text =
+        String(row[c] || "");
+
+      if (
+        text.indexOf(
+          "{{ITEMNO}}"
+        ) !== -1
+      ) {
+        info.itemNoCol =
+          c + 1;
+      }
+
+      if (
+        text.indexOf(
+          "{{UNIT}}"
+        ) !== -1
+      ) {
+        info.unitCol =
+          c + 1;
+      }
+
+      if (
+        text.indexOf(
+          "{{ITEMDESC}}"
+        ) !== -1
+      ) {
+        info.itemDescCol =
+          c + 1;
+      }
+
+      if (
+        text.indexOf(
+          "{{QTY}}"
+        ) !== -1
+      ) {
+        info.qtyCol =
+          c + 1;
+      }
+
+      if (
+        text.indexOf(
+          "{{UNITCOST}}"
+        ) !== -1
+      ) {
+        info.unitCostCol =
+          c + 1;
+      }
+
+      if (
+        text.indexOf(
+          "{{TOTALCOST}}"
+        ) !== -1
+      ) {
+        info.totalCostCol =
+          c + 1;
+      }
+    }
+
+    if (
+      info.itemNoCol ||
+      info.unitCol ||
+      info.itemDescCol ||
+      info.qtyCol ||
+      info.unitCostCol ||
+      info.totalCostCol
+    ) {
+      return info;
+    }
+  }
+
+  return null;
+}
+
+
+// =========================================================
+// CLEAR PR TEMPLATE ROW
+// =========================================================
+
+function clearPRGoodsTemplateRow_(
+  sheet,
+  rowNumber,
+  cols
+) {
+
+  const columns = [
+    cols.itemNoCol,
+    cols.unitCol,
+    cols.itemDescCol,
+    cols.qtyCol,
+    cols.unitCostCol,
+    cols.totalCostCol
+  ];
+
+  columns.forEach(
+    col => {
+
+      if (col) {
+
+        sheet
+          .getRange(
+            rowNumber,
+            col
+          )
+          .clearContent();
+
+      }
+
+    }
+  );
+}
+
+
+// =========================================================
+// CHECK BLANK
+// =========================================================
+
+function isBlank_(value) {
+
+  return (
+    value === "" ||
+    value === null ||
+    value === undefined
+  );
+}
+
+
+// =========================================================
+// REPLACE PLACEHOLDERS
+// =========================================================
+
+function replaceAllPlaceholdersInSheet_(
+  sheet,
+  replacements
+) {
+
+  const range =
+    sheet.getDataRange();
+
+  const values =
+    range.getDisplayValues();
+
+  for (
+    let r = 0;
+    r < values.length;
+    r++
+  ) {
+
+    for (
+      let c = 0;
+      c < values[r].length;
+      c++
+    ) {
+
+      let cellValue =
+        values[r][c];
+
+      if (!cellValue) {
+        continue;
+      }
+
+      let newValue =
+        cellValue;
+
+      let changed =
+        false;
+
+      for (
+        const key in replacements
+      ) {
+
+        if (
+          newValue.indexOf(
+            key
+          ) !== -1
+        ) {
+
+          newValue =
+            newValue
+              .split(key)
+              .join(
+                String(
+                  replacements[key] ?? ""
+                )
+              );
+
+          changed =
+            true;
+        }
+      }
+
+      if (changed) {
+
+        sheet
+          .getRange(
+            r + 1,
+            c + 1
+          )
+          .setValue(
+            newValue
+          );
+      }
+    }
+  }
+}
