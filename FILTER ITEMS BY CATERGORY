@@ -1,0 +1,252 @@
+/**
+ * ============================================================
+ * FORM / FORM 2  —  CATEGORY → ITEM DROPDOWN + REVISE ACTIVITY
+ * ============================================================
+ *
+ * Contents:
+ *   1. onEdit()                  – only ONE onEdit allowed per project
+ *   2. applyFormFormulas_()      – header/total formulas
+ *   3. setItemDropdownForRow()   – builds the B[row] dropdown
+ *   4. resetItemDropdowns_()     – call this from your SUBMIT function
+ *   5. reviseActivity()          – restores an activity into the form
+ *   6. small helpers
+ *
+ * Assumes showProgress() and hideProgress() already exist in
+ * your project (they are used by your original reviseActivity).
+ *
+ * Delete the other copies of onEdit / setItemDropdownForRow /
+ * reviseActivity from your project so there are no duplicates.
+ */
+ 
+ 
+// ============================================================
+// 1. onEdit
+// ============================================================
+ 
+function onEdit(e) {
+
+  const sheet = e.range.getSheet();
+
+  if (!["FORM", "FORM 2"].includes(sheet.getName())) return;
+
+  const range = e.range;
+
+  // Header area edited → refresh formulas
+  // Detail-row edits → skip formula rewriting
+  if (range.getRow() <= 13) {
+    applyFormFormulas_(sheet);
+  }
+
+  // CATEGORY → ITEM DROPDOWN
+  if (range.getColumn() > 1 || range.getLastColumn() < 1) return;
+  if (range.getLastRow() < 12) return;
+
+  const pricesData = getPricesData_(sheet.getParent());
+
+  // Keep pasted B values when A:B are pasted together
+  const keepValue = range.getLastColumn() >= 2;
+
+  for (
+    let r = Math.max(range.getRow(), 12);
+    r <= range.getLastRow();
+    r++
+  ) {
+    setItemDropdownForRow(sheet, r, {
+      pricesData: pricesData,
+      keepValue: keepValue
+    });
+  }
+}
+ 
+ 
+// ============================================================
+// 2. FORM FORMULAS
+// ============================================================
+ 
+function applyFormFormulas_(sheet) {
+ 
+  sheet.getRange("B1").setFormula(
+    '=WFP!B1'
+  );
+ 
+   sheet.getRange("B6").setFormula(
+    '=IFERROR(INDEX(\'WFP\'!F4:F,MATCH(B2,\'WFP\'!B4:B,0)),"")'
+  );
+ 
+  sheet.getRange("B9").setFormula(
+    '=IFERROR(IF(B6="", "", B6-B7-B8),"")'
+  );
+ 
+  sheet.getRange("C4").setFormula(
+    '=IFERROR(INDEX(\'WFP\'!C4:C,MATCH(B2,\'WFP\'!B4:B,0)),"")'
+  );
+
+  sheet.getRange("F11").setFormula(
+    '=IF(F12="", "", B9-F12)'
+  );
+ 
+  sheet.getRange("F12").setFormula(
+    '=IF(COUNT(F14:F)=0,"",SUM(F14:F))'
+  );
+}
+ 
+ 
+// ============================================================
+// 3. CREATE ITEM DROPDOWN BASED ON CATEGORY
+// ============================================================
+/**
+ * FORM:    A[row] = Category, B[row] = Item Description
+ * PRICES:  A = Category,      B = Item Description (data from row 3)
+ *
+ * opts (all optional):
+ *   pricesData – PRICES rows already read (saves one read per row)
+ *   keepValue  – true = do NOT clear the current value in B[row].
+ *                Used by reviseActivity(): the value is written first,
+ *                then the dropdown is attached.
+ */
+function setItemDropdownForRow(sheet, row, opts) {
+ 
+  opts = opts || {};
+ 
+  const ss = sheet.getParent();
+  const category = sheet.getRange(row, 1).getValue();
+  const itemCell = sheet.getRange(row, 2);
+ 
+  // CLEAR OLD ITEM (unless told to keep it) + OLD DROPDOWN
+  if (!opts.keepValue) itemCell.clearContent();
+  itemCell.clearDataValidations();
+ 
+  // NO CATEGORY
+  if (!category) return;
+ 
+  // READ PRICES
+  const data = opts.pricesData || getPricesData_(ss);
+  if (data.length === 0) return;
+ 
+  // FILTER ITEMS BY CATEGORY + REMOVE DUPLICATES
+  const target = String(category).trim().toUpperCase();
+ 
+  const items = data
+    .filter(r => String(r[0]).trim().toUpperCase() === target)
+    .map(r => r[1])
+    .filter(item => item !== "");
+ 
+  const uniqueItems = [...new Set(items)];
+ 
+  if (uniqueItems.length === 0) return;
+ 
+  // HELPER SHEET (one per form sheet, so FORM and FORM 2 don't collide)
+  const helperSheet = getHelperSheet_(ss, sheet);
+ 
+  // FORM ROW 12 → HELPER COLUMN 1, ROW 13 → 2, ROW 14 → 3 ...
+  const helperColumn = row - 11;
+ 
+  // make sure the helper sheet has enough columns
+  const maxCols = helperSheet.getMaxColumns();
+  if (helperColumn > maxCols) {
+    helperSheet.insertColumnsAfter(maxCols, helperColumn - maxCols);
+  }
+ 
+  // REFRESH HELPER COLUMN
+  helperSheet
+    .getRange(1, helperColumn, helperSheet.getMaxRows(), 1)
+    .clearContent();
+ 
+  helperSheet
+    .getRange(1, helperColumn, uniqueItems.length, 1)
+    .setValues(uniqueItems.map(item => [item]));
+ 
+  const validationRange = helperSheet.getRange(
+    1,
+    helperColumn,
+    uniqueItems.length,
+    1
+  );
+ 
+  // CREATE + APPLY DROPDOWN
+  const rule = SpreadsheetApp
+    .newDataValidation()
+    .requireValueInRange(validationRange, true)
+    .setAllowInvalid(false)
+    .build();
+ 
+  itemCell.setDataValidation(rule);
+}
+ 
+ 
+// ============================================================
+// 4. RESET DROPDOWNS  (call this from your SUBMIT function)
+// ============================================================
+/**
+ * Removes the item dropdowns from B[startRow]:B and empties the
+ * matching helper columns.
+ *
+ * Use in your submit function, right after it clears A, B, E, G:
+ *
+ *     resetItemDropdowns_(formSheet);        // startRow defaults to 14
+ */
+function resetItemDropdowns_(sheet, startRow) {
+ 
+  startRow = startRow || 14;
+ 
+  const numRows = sheet.getMaxRows() - startRow + 1;
+  if (numRows < 1) return;
+ 
+  // remove the dropdowns in column B
+  sheet.getRange(startRow, 2, numRows, 1).clearDataValidations();
+ 
+  // empty the helper columns that belonged to those rows
+  const helper = sheet.getParent().getSheetByName(getHelperSheetName_(sheet));
+  if (!helper) return;
+ 
+  const firstHelperCol = startRow - 11;
+  const numCols = helper.getMaxColumns() - firstHelperCol + 1;
+ 
+  if (numCols >= 1) {
+    helper
+      .getRange(1, firstHelperCol, helper.getMaxRows(), numCols)
+      .clearContent();
+  }
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+/** PRICES rows: [Category, Item Description], data starts at row 3. */
+function getPricesData_(ss) {
+
+  const pricesSheet = ss.getSheetByName("PRICES");
+  if (!pricesSheet) return [];
+
+  const lastRow = pricesSheet.getLastRow();
+  if (lastRow < 3) return [];
+
+  return pricesSheet.getRange(3, 1, lastRow - 2, 2).getValues();
+}
+
+/** FORM → "_DROPDOWN_HELPER", FORM 2 → "_DROPDOWN_HELPER_FORM_2" */
+function getHelperSheetName_(formSheet) {
+
+  const name = formSheet.getName();
+
+  return name === "FORM"
+    ? "_DROPDOWN_HELPER"
+    : "_DROPDOWN_HELPER_" + name.replace(/\s+/g, "_");
+}
+
+/** Gets or creates (hidden) the helper sheet for a form sheet. */
+function getHelperSheet_(ss, formSheet) {
+
+  const helperName = getHelperSheetName_(formSheet);
+
+  let helperSheet = ss.getSheetByName(helperName);
+
+  if (!helperSheet) {
+    helperSheet = ss.insertSheet(helperName);
+    helperSheet.hideSheet();
+    ss.setActiveSheet(formSheet);   // insertSheet switches the active sheet
+  }
+
+  return helperSheet;
+}
