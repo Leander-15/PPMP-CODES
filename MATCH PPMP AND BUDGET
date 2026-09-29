@@ -1,0 +1,798 @@
+function matchBudgetPR() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const ppmp = ss.getSheetByName("PPMP");
+  const budget = ss.getSheetByName("Budget(PR)");
+  const prNoSheet = ss.getSheetByName("PR No.");
+
+  if (!ppmp) {
+    throw new Error('Sheet "PPMP" not found.');
+  }
+
+  if (!budget) {
+    throw new Error('Sheet "Budget(PR)" not found.');
+  }
+
+  if (!prNoSheet) {
+    throw new Error('Sheet "PR No." not found.');
+  }
+
+  // ============================================================
+  // DETERMINE LAST ROWS
+  // ============================================================
+
+  const ppmpLastRow = ppmp.getLastRow();
+  const budgetLastRow = budget.getLastRow();
+  const prNoLastRow = prNoSheet.getLastRow();
+
+  if (ppmpLastRow < 2) {
+    console.log("No data in PPMP.");
+    return;
+  }
+
+  if (budgetLastRow < 2) {
+    console.log("No data in Budget(PR).");
+    return;
+  }
+
+  // ============================================================
+  // READ PPMP
+  //
+  // E = Activity/Title
+  // M = Category
+  // N = Item
+  // R = Total Amount
+  //
+  // Read E:R
+  // ============================================================
+
+  const ppmpData = ppmp
+    .getRange(
+      2,
+      5,
+      ppmpLastRow - 1,
+      14
+    )
+    .getValues();
+
+  // ============================================================
+  // READ BUDGET(PR)
+  //
+  // D = Budget No.
+  // J = WFP TITLE
+  // K = TYPE
+  // L = ITEM
+  // N = AMOUNT
+  //
+  // Read D:N
+  // ============================================================
+
+  const budgetData = budget
+    .getRange(
+      2,
+      4,
+      budgetLastRow - 1,
+      11
+    )
+    .getValues();
+
+  // ============================================================
+  // NORMALIZE TEXT
+  // ============================================================
+
+  function normalizeText(value) {
+
+    if (
+      value === null ||
+      value === undefined
+    ) {
+      return "";
+    }
+
+    return String(value)
+
+      .replace(/\u00A0/g, " ")
+
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+
+      .replace(/[\r\n\t]/g, " ")
+
+      .normalize("NFKC")
+
+      .replace(/\s+/g, " ")
+
+      .replace(/\(\s+/g, "(")
+
+      .replace(/\s+\)/g, ")")
+
+      .toLowerCase()
+
+      .trim();
+  }
+
+  // ============================================================
+  // NORMALIZE AMOUNT
+  // ============================================================
+
+  function normalizeAmount(value) {
+
+    if (
+      value === null ||
+      value === undefined ||
+      value === ""
+    ) {
+      return "";
+    }
+
+    if (typeof value === "number") {
+      return Math.round(value * 100) / 100;
+    }
+
+    let text = String(value)
+
+      .replace(/\u00A0/g, "")
+
+      .replace(/₱/g, "")
+
+      .replace(/PHP/gi, "")
+
+      .replace(/,/g, "")
+
+      .replace(/\s/g, "")
+
+      .trim();
+
+    text = text.replace(/[^\d.-]/g, "");
+
+    const number = Number(text);
+
+    if (isNaN(number)) {
+      return "";
+    }
+
+    return Math.round(number * 100) / 100;
+  }
+
+  // ============================================================
+  // CREATE 3-FIELD MATCH KEY
+  //
+  // WFP + CATEGORY + ITEM
+  //
+  // AMOUNT IS NOT INCLUDED.
+  // ============================================================
+
+  function makeTextKey(
+    wfp,
+    category,
+    item
+  ) {
+
+    return [
+      normalizeText(wfp),
+      normalizeText(category),
+      normalizeText(item)
+    ].join("|||");
+  }
+
+  // ============================================================
+  // BUILD BUDGET(PR) INDEX
+  // ============================================================
+
+  const textIndex = new Map();
+
+  function addToIndex(
+    map,
+    key,
+    record
+  ) {
+
+    if (!key) {
+      return;
+    }
+
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+
+    map.get(key).push(record);
+  }
+
+  // ============================================================
+  // INDEX BUDGET(PR)
+  // ============================================================
+
+  let indexedCount = 0;
+
+  for (
+    let i = 0;
+    i < budgetData.length;
+    i++
+  ) {
+
+    const row = budgetData[i];
+
+    // D = Budget No.
+    // J = WFP TITLE
+    // K = TYPE
+    // L = ITEM
+    // N = AMOUNT
+
+    const budgetNumber = row[0];
+    const wfp = row[6];
+    const category = row[7];
+    const item = row[8];
+    const amount = row[10];
+
+    const nWfp = normalizeText(wfp);
+    const nCategory = normalizeText(category);
+    const nItem = normalizeText(item);
+
+    if (
+      nWfp === "" &&
+      nCategory === "" &&
+      nItem === ""
+    ) {
+      continue;
+    }
+
+    const record = {
+
+      budgetNumber: budgetNumber,
+
+      rowNumber: i + 2,
+
+      wfp: wfp,
+
+      category: category,
+
+      item: item,
+
+      amount: amount,
+
+      nAmount: normalizeAmount(amount)
+    };
+
+    const key = makeTextKey(
+      wfp,
+      category,
+      item
+    );
+
+    addToIndex(
+      textIndex,
+      key,
+      record
+    );
+
+    indexedCount++;
+  }
+
+  // ============================================================
+  // OUTPUT
+  //
+  // U = Budget Number
+  // V = PR Number
+  // ============================================================
+
+  const budgetOutput = [];
+  const amountMismatchOutput = [];
+
+  let exactAmountMatch = 0;
+  let amountDifferent = 0;
+  let ambiguous = 0;
+  let notMatched = 0;
+
+  // ============================================================
+  // PROCESS PPMP
+  // ============================================================
+
+  for (
+    let i = 0;
+    i < ppmpData.length;
+    i++
+  ) {
+
+    const row = ppmpData[i];
+
+    // E = Activity/Title
+    // M = Category
+    // N = Item
+    // R = Total Amount
+
+    const wfp = row[0];
+    const category = row[8];
+    const item = row[9];
+    const amount = row[13];
+
+    // ==========================================================
+    // EMPTY ROW
+    // ==========================================================
+
+    if (
+      wfp === "" &&
+      category === "" &&
+      item === "" &&
+      amount === ""
+    ) {
+
+      budgetOutput.push([""]);
+      amountMismatchOutput.push([false]);
+
+      continue;
+    }
+
+    // ==========================================================
+    // MATCH USING:
+    //
+    // WFP + CATEGORY + ITEM
+    //
+    // AMOUNT IS NOT REQUIRED.
+    // ==========================================================
+
+    const key = makeTextKey(
+      wfp,
+      category,
+      item
+    );
+
+    const matches =
+      textIndex.get(key) || [];
+
+    // ==========================================================
+    // NO MATCH
+    // ==========================================================
+
+    if (
+      matches.length === 0
+    ) {
+
+      budgetOutput.push([""]);
+      amountMismatchOutput.push([false]);
+
+      notMatched++;
+
+      continue;
+    }
+
+    // ==========================================================
+    // MULTIPLE MATCHES
+    // ==========================================================
+
+    if (
+      matches.length > 1
+    ) {
+
+      const uniqueBudgetNumbers = [];
+      const seenBudgetNumbers = new Set();
+
+      for (
+        const record of matches
+      ) {
+
+        const normalizedBudget =
+          normalizeText(
+            record.budgetNumber
+          );
+
+        if (
+          !seenBudgetNumbers.has(
+            normalizedBudget
+          )
+        ) {
+
+          seenBudgetNumbers.add(
+            normalizedBudget
+          );
+
+          uniqueBudgetNumbers.push(
+            record.budgetNumber
+          );
+        }
+      }
+
+      // ========================================================
+      // SAME BUDGET NUMBER
+      // ========================================================
+
+      if (
+        uniqueBudgetNumbers.length === 1
+      ) {
+
+        const budgetNumber =
+          uniqueBudgetNumbers[0];
+
+        const ppmpAmount =
+          normalizeAmount(amount);
+
+        let amountMatches = false;
+
+        for (
+          const record of matches
+        ) {
+
+          if (
+            record.nAmount === ppmpAmount
+          ) {
+
+            amountMatches = true;
+
+            break;
+          }
+        }
+
+        budgetOutput.push([
+          budgetNumber
+        ]);
+
+        if (
+          amountMatches
+        ) {
+
+          amountMismatchOutput.push([
+            false
+          ]);
+
+          exactAmountMatch++;
+
+        } else {
+
+          amountMismatchOutput.push([
+            true
+          ]);
+
+          amountDifferent++;
+        }
+
+        continue;
+      }
+
+      // ========================================================
+      // DIFFERENT BUDGET NUMBERS
+      //
+      // Do not guess.
+      // ========================================================
+
+      budgetOutput.push([""]);
+      amountMismatchOutput.push([false]);
+
+      ambiguous++;
+
+      continue;
+    }
+
+    // ==========================================================
+    // EXACTLY ONE MATCH
+    // ==========================================================
+
+    const match = matches[0];
+
+    const ppmpAmount =
+      normalizeAmount(amount);
+
+    const budgetAmount =
+      match.nAmount;
+
+    budgetOutput.push([
+      match.budgetNumber
+    ]);
+
+    // ==========================================================
+    // AMOUNT MATCH
+    // ==========================================================
+
+    if (
+      ppmpAmount === budgetAmount
+    ) {
+
+      amountMismatchOutput.push([
+        false
+      ]);
+
+      exactAmountMatch++;
+
+    }
+
+    // ==========================================================
+    // AMOUNT DIFFERENT
+    // ==========================================================
+
+    else {
+
+      amountMismatchOutput.push([
+        true
+      ]);
+
+      amountDifferent++;
+    }
+  }
+
+  // ============================================================
+  // WRITE BUDGET NUMBER TO PPMP COLUMN U
+  // ============================================================
+
+  const budgetRange =
+    ppmp.getRange(
+      2,
+      21,
+      budgetOutput.length,
+      1
+    );
+
+  budgetRange.setValues(
+    budgetOutput
+  );
+
+  // ============================================================
+  // HIGHLIGHT AMOUNT MISMATCHES
+  //
+  // Yellow = WFP + Category + Item matched
+  // but amount is different.
+  // ============================================================
+
+  const backgrounds =
+    budgetRange.getBackgrounds();
+
+  for (
+    let i = 0;
+    i < amountMismatchOutput.length;
+    i++
+  ) {
+
+    if (
+      amountMismatchOutput[i][0] === true
+    ) {
+
+      backgrounds[i][0] = "#ffff00";
+
+    } else {
+
+      backgrounds[i][0] = null;
+    }
+  }
+
+  budgetRange.setBackgrounds(
+    backgrounds
+  );
+
+  // ============================================================
+  // PR NO. LOOKUP
+  //
+  // PR No.:
+  //
+  // B = Budget Number
+  // C = PR Number
+  //
+  // PPMP:
+  //
+  // U = Budget Number
+  // V = PR Number
+  // ============================================================
+
+  const prOutput = [];
+
+  if (
+    prNoLastRow >= 2
+  ) {
+
+    const prData =
+      prNoSheet
+        .getRange(
+          2,
+          2,
+          prNoLastRow - 1,
+          2
+        )
+        .getValues();
+
+    const prIndex = new Map();
+
+    for (
+      let i = 0;
+      i < prData.length;
+      i++
+    ) {
+
+      const budgetNumber =
+        prData[i][0];
+
+      const prNumber =
+        prData[i][1];
+
+      const normalizedBudget =
+        normalizeText(
+          budgetNumber
+        );
+
+      if (
+        normalizedBudget === ""
+      ) {
+        continue;
+      }
+
+      if (
+        !prIndex.has(
+          normalizedBudget
+        )
+      ) {
+
+        prIndex.set(
+          normalizedBudget,
+          prNumber
+        );
+      }
+    }
+
+    // ==========================================================
+    // MATCH PPMP U → PR No. B
+    // RETURN PR No. C → PPMP V
+    // ==========================================================
+
+    for (
+      let i = 0;
+      i < budgetOutput.length;
+      i++
+    ) {
+
+      const budgetNumber =
+        budgetOutput[i][0];
+
+      if (
+        budgetNumber === "" ||
+        budgetNumber === null ||
+        budgetNumber === undefined
+      ) {
+
+        prOutput.push([""]);
+
+        continue;
+      }
+
+      const normalizedBudget =
+        normalizeText(
+          budgetNumber
+        );
+
+      const prNumber =
+        prIndex.get(
+          normalizedBudget
+        );
+
+      if (
+        prNumber !== undefined
+      ) {
+
+        prOutput.push([
+          prNumber
+        ]);
+
+      } else {
+
+        prOutput.push([
+          ""
+        ]);
+      }
+    }
+
+  } else {
+
+    for (
+      let i = 0;
+      i < budgetOutput.length;
+      i++
+    ) {
+
+      prOutput.push([""]);
+    }
+  }
+
+  // ============================================================
+  // WRITE PR NUMBER TO PPMP COLUMN V
+  // ============================================================
+
+  ppmp
+    .getRange(
+      2,
+      22,
+      prOutput.length,
+      1
+    )
+    .setValues(
+      prOutput
+    );
+
+  // ============================================================
+  // FLUSH
+  // ============================================================
+
+  SpreadsheetApp.flush();
+
+  // ============================================================
+  // COUNT PR MATCHES
+  // ============================================================
+
+  let prMatched = 0;
+
+  for (
+    let i = 0;
+    i < prOutput.length;
+    i++
+  ) {
+
+    if (
+      prOutput[i][0] !== "" &&
+      prOutput[i][0] !== null &&
+      prOutput[i][0] !== undefined
+    ) {
+
+      prMatched++;
+    }
+  }
+
+  // ============================================================
+  // LOG
+  // ============================================================
+
+  console.log(
+    "===================================="
+  );
+
+  console.log(
+    "PPMP BUDGET + PR MATCHING COMPLETE"
+  );
+
+  console.log(
+    "===================================="
+  );
+
+  console.log(
+    "PPMP rows checked: " +
+    ppmpData.length
+  );
+
+  console.log(
+    "Budget(PR) rows indexed: " +
+    indexedCount
+  );
+
+  console.log(
+    "Exact amount matches: " +
+    exactAmountMatch
+  );
+
+  console.log(
+    "Amount different: " +
+    amountDifferent
+  );
+
+  console.log(
+    "Ambiguous: " +
+    ambiguous
+  );
+
+  console.log(
+    "Not matched: " +
+    notMatched
+  );
+
+  console.log(
+    "PR Numbers matched: " +
+    prMatched
+  );
+
+  console.log(
+    "Budget Numbers written to PPMP column U"
+  );
+
+  console.log(
+    "PR Numbers written to PPMP column V"
+  );
+
+  console.log(
+    "Yellow = Budget matched but amount is different"
+  );
+
+  console.log(
+    "===================================="
+  );
+}
