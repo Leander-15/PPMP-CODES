@@ -1,0 +1,3728 @@
+// ============================================================
+// CENTRAL PROCUREMENT SYSTEM
+// 2026 ATI PROCUREMENT MONITORING
+//
+// CENTRAL RESPONSIBILITY:
+//
+// 1. Purchase Order numbers
+// 2. BAC Resolution numbers
+// 3. Contract numbers
+//
+// PROCESSING ORDER:
+//
+// PO
+//   ↓
+// BAC RES
+//   ↓
+// CONTRACT
+//
+// ============================================================
+//
+// IMPORTANT GROUP CONTROL RULE:
+//
+// The control number belongs to the FIRST ROW of each
+// procurement group.
+//
+// PO       → AR
+// BAC RES  → AQ
+// CONTRACT → AR
+//
+// PROCESS:
+//
+// 1. Validate required/vital data.
+// 2. Check if the procurement group already has a control
+//    number in LEAN.
+//       → YES = SKIP ENTIRE GROUP.
+// 3. If LEAN control number is blank, search the CENTRAL
+//    sheet for an exact matching procurement.
+//       → MATCH = DO NOT WRITE TO CENTRAL.
+//                 Copy existing control number to the
+//                 FIRST ROW of LEAN.
+// 4. If no CENTRAL match:
+//       → Generate new control number.
+//       → Write new record to CENTRAL.
+//       → Write control number to FIRST ROW of LEAN.
+//
+// ============================================================
+
+
+// ============================================================
+// SOURCE DATABASES
+// ============================================================
+
+const SOURCE_DATABASES = [
+
+  {
+    name: "LEAN PROCUREMENT 1",
+    spreadsheetId:
+      "1Rbe9TfT0F_s5bXqVLn5tqLZdF0FoL9SQzyvfU-zC1c8",
+    sheetName: "DATABASE"
+  },
+
+  {
+    name: "LEAN PROCUREMENT 2",
+    spreadsheetId:
+      "1pN49UXhu0MV4_jCLlwF5H3DWrmUnfXDARg0UzbyquHY",
+    sheetName: "DATABASE"
+  },
+
+  {
+    name: "LEAN PROCUREMENT 3",
+    spreadsheetId:
+      "1pN49UXhu0MV4_jCLlwF5H3DWrmUnfXDARg0UzbyquHY",
+    sheetName: "DATABASE"
+  }
+
+];
+
+
+// ============================================================
+// CENTRAL SHEETS
+// ============================================================
+
+const CENTRAL_SHEETS = {
+
+  PHILGEPS:
+    "PHILGEPS-PR POSTING TRACER",
+
+  PURCHASE_ORDERS:
+    "Purchase Orders",
+
+  BACRES:
+    "BACRES (SVP, PUBLIC BID)",
+
+  CONTRACTS:
+    "Contract Nos."
+
+};
+
+
+// ============================================================
+// CENTRAL AUTO RUN SETTINGS
+// ============================================================
+
+const CENTRAL_AUTO_RUN_FUNCTION =
+  "runCentralAutoPipeline";
+
+const CENTRAL_LOCK_TIMEOUT =
+  30000;
+
+
+// ============================================================
+// TEST CENTRAL SETUP
+// ============================================================
+
+function testCentralSetup() {
+
+  const centralSS =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  Logger.log(
+    "================================================"
+  );
+
+  Logger.log(
+    "CENTRAL: " +
+    centralSS.getName()
+  );
+
+  Logger.log(
+    "================================================"
+  );
+
+
+  // ----------------------------------------------------------
+  // CHECK CENTRAL SHEETS
+  // ----------------------------------------------------------
+
+  Object.entries(CENTRAL_SHEETS).forEach(
+    ([key, sheetName]) => {
+
+      const sheet =
+        centralSS.getSheetByName(sheetName);
+
+      if (!sheet) {
+
+        throw new Error(
+          "Missing central sheet: " +
+          sheetName
+        );
+
+      }
+
+      Logger.log(
+        "FOUND CENTRAL SHEET: " +
+        sheetName
+      );
+
+    }
+  );
+
+
+  // ----------------------------------------------------------
+  // CHECK LEAN DATABASES
+  // ----------------------------------------------------------
+
+  SOURCE_DATABASES.forEach(
+    source => {
+
+      const sourceSS =
+        SpreadsheetApp.openById(
+          source.spreadsheetId
+        );
+
+      const db =
+        sourceSS.getSheetByName(
+          source.sheetName
+        );
+
+      if (!db) {
+
+        throw new Error(
+          source.name +
+          ": Sheet '" +
+          source.sheetName +
+          "' was not found."
+        );
+
+      }
+
+      Logger.log(
+        source.name +
+        " → " +
+        sourceSS.getName() +
+        " → " +
+        db.getName()
+      );
+
+    }
+  );
+
+
+  Logger.log(
+    "================================================"
+  );
+
+  Logger.log(
+    "===== CENTRAL SETUP TEST PASSED ====="
+  );
+
+  Logger.log(
+    "================================================"
+  );
+
+}
+
+
+// ============================================================
+// GET UNIQUE SOURCE DATABASES
+// ============================================================
+//
+// During testing LEAN 2 and LEAN 3 currently have the SAME
+// Spreadsheet ID.
+//
+// This prevents the same physical DATABASE from being processed
+// twice during one central run.
+//
+// Once LEAN 3 gets its real Spreadsheet ID, it will automatically
+// be processed as a separate source.
+// ============================================================
+
+function getUniqueSourceDatabases_() {
+
+  const seen = new Set();
+  const uniqueSources = [];
+
+  SOURCE_DATABASES.forEach(
+    source => {
+
+      const key =
+        source.spreadsheetId +
+        "||" +
+        source.sheetName;
+
+      if (seen.has(key)) {
+
+        Logger.log(
+          "SKIPPING DUPLICATE SOURCE: " +
+          source.name +
+          " → " +
+          source.spreadsheetId
+        );
+
+        return;
+
+      }
+
+      seen.add(key);
+      uniqueSources.push(source);
+
+    }
+  );
+
+  return uniqueSources;
+
+}
+
+
+// ============================================================
+// GET LEAN DATABASE
+// ============================================================
+
+function getLeanDatabaseCentral_(source) {
+
+  const sourceSS =
+    SpreadsheetApp.openById(
+      source.spreadsheetId
+    );
+
+  const sourceSheet =
+    sourceSS.getSheetByName(
+      source.sheetName
+    ) ||
+    sourceSS.getSheetByName(
+      "Database"
+    );
+
+  if (!sourceSheet) {
+
+    throw new Error(
+      source.name +
+      ": DATABASE sheet not found."
+    );
+
+  }
+
+  return {
+    sourceSS: sourceSS,
+    sourceSheet: sourceSheet
+  };
+
+}
+
+
+// ============================================================
+// GET CENTRAL SHEET
+// ============================================================
+
+function getCentralSheet_(sheetName) {
+
+  const centralSS =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  const sheet =
+    centralSS.getSheetByName(
+      sheetName
+    );
+
+  if (!sheet) {
+
+    throw new Error(
+      "Central sheet not found: " +
+      sheetName
+    );
+
+  }
+
+  return sheet;
+
+}
+
+
+// ============================================================
+// SETUP CENTRAL AUTO RUN
+// ============================================================
+
+function setupCentralAutoRunTrigger() {
+
+  const functionName =
+    CENTRAL_AUTO_RUN_FUNCTION;
+
+
+  ScriptApp.getProjectTriggers()
+    .forEach(trigger => {
+
+      if (
+        trigger.getHandlerFunction() ===
+        functionName
+      ) {
+
+        ScriptApp.deleteTrigger(
+          trigger
+        );
+
+      }
+
+    });
+
+
+  ScriptApp.newTrigger(
+    functionName
+  )
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+
+
+  Logger.log(
+    "CENTRAL AUTO RUN TRIGGER CREATED."
+  );
+
+}
+
+
+// ============================================================
+// REMOVE CENTRAL AUTO RUN
+// ============================================================
+
+function removeCentralAutoRunTrigger() {
+
+  const functionName =
+    CENTRAL_AUTO_RUN_FUNCTION;
+
+
+  ScriptApp.getProjectTriggers()
+    .forEach(trigger => {
+
+      if (
+        trigger.getHandlerFunction() ===
+        functionName
+      ) {
+
+        ScriptApp.deleteTrigger(
+          trigger
+        );
+
+      }
+
+    });
+
+
+  Logger.log(
+    "CENTRAL AUTO RUN TRIGGER REMOVED."
+  );
+
+}
+
+
+// ============================================================
+// CENTRAL AUTO PIPELINE
+// ============================================================
+//
+// ORDER:
+//
+// 1. PO
+// 2. BAC RES
+// 3. CONTRACT
+//
+// ONE SCRIPT LOCK PROTECTS THE WHOLE PIPELINE.
+// ============================================================
+
+function runCentralAutoPipeline() {
+
+  const lock =
+    LockService.getScriptLock();
+
+
+  if (
+    !lock.tryLock(
+      CENTRAL_LOCK_TIMEOUT
+    )
+  ) {
+
+    Logger.log(
+      "CENTRAL AUTO RUN SKIPPED — " +
+      "another central run is already active."
+    );
+
+    return;
+
+  }
+
+
+  try {
+
+    Logger.log(
+      "================================================"
+    );
+
+    Logger.log(
+      "CENTRAL AUTO PIPELINE START"
+    );
+
+    Logger.log(
+      "Time: " +
+      new Date()
+    );
+
+    Logger.log(
+      "================================================"
+    );
+
+
+    // ========================================================
+    // STEP 1 — PURCHASE ORDERS
+    // ========================================================
+
+    Logger.log(
+      "STEP 1/3 — PURCHASE ORDERS"
+    );
+
+    syncAllPurchaseOrdersCentral_();
+
+
+    // ========================================================
+    // STEP 2 — BAC RES
+    // ========================================================
+
+    Logger.log(
+      "STEP 2/3 — BAC RESOLUTIONS"
+    );
+
+    syncAllBacResCentral_();
+
+
+    // ========================================================
+    // STEP 3 — CONTRACTS
+    // ========================================================
+
+    Logger.log(
+      "STEP 3/3 — CONTRACT NUMBERS"
+    );
+
+    syncAllContractNumbersCentral_();
+
+
+    Logger.log(
+      "================================================"
+    );
+
+    Logger.log(
+      "CENTRAL AUTO PIPELINE COMPLETE"
+    );
+
+    Logger.log(
+      "================================================"
+    );
+
+
+  } catch (error) {
+
+    Logger.log(
+      "================================================"
+    );
+
+    Logger.log(
+      "CENTRAL AUTO PIPELINE ERROR"
+    );
+
+    Logger.log(
+      "Message: " +
+      error.message
+    );
+
+    Logger.log(
+      "Stack: " +
+      (
+        error.stack ||
+        ""
+      )
+    );
+
+    Logger.log(
+      "================================================"
+    );
+
+
+  } finally {
+
+    lock.releaseLock();
+
+  }
+
+}
+
+
+// ============================================================
+// ALL PURCHASE ORDERS
+// ============================================================
+
+function syncAllPurchaseOrdersCentral_() {
+
+  Logger.log(
+    "----- CENTRAL PO SYNC START -----"
+  );
+
+
+  const sources =
+    getUniqueSourceDatabases_();
+
+
+  sources.forEach(
+    source => {
+
+      Logger.log(
+        "PO PROCESSING: " +
+        source.name
+      );
+
+
+      const lean =
+        getLeanDatabaseCentral_(
+          source
+        );
+
+
+      syncPurchaseOrdersCentral_(
+        source,
+        lean.sourceSheet
+      );
+
+
+      Logger.log(
+        "PO COMPLETE: " +
+        source.name
+      );
+
+    }
+  );
+
+
+  Logger.log(
+    "----- CENTRAL PO SYNC COMPLETE -----"
+  );
+
+}
+
+
+// ============================================================
+// PURCHASE ORDER SYNC
+// ============================================================
+
+function syncPurchaseOrdersCentral_(
+  source,
+  sourceSheet
+) {
+
+  // DATABASE COLUMN INDEXES
+  const DB_COL_PR_NO = 1;              // A
+  const DB_COL_PURPOSE = 10;           // J
+  const DB_COL_DIVISION = 12;          // L
+  const DB_COL_SUPPLIER = 30;          // AD
+  const DB_COL_GROSS = 32;             // AF
+  const DB_COL_CATEGORY = 33;          // AG
+  const DB_COL_PO_NO = 44;             // AR
+  const DB_COL_PROCUREMENT_TYPE = 45;  // AS
+  const DB_COL_DOCUMENT_TYPE = 47;     // AU
+
+
+  const targetSheet =
+    getCentralSheet_(
+      CENTRAL_SHEETS.PURCHASE_ORDERS
+    );
+
+
+  const sourceLastRow =
+    sourceSheet.getLastRow();
+
+  const sourceLastCol =
+    sourceSheet.getLastColumn();
+
+
+  if (sourceLastRow < 2) {
+
+    Logger.log(
+      source.name +
+      ": No database rows found for PO."
+    );
+
+    return;
+
+  }
+
+
+  const sourceData =
+    sourceSheet
+      .getRange(
+        1,
+        1,
+        sourceLastRow,
+        sourceLastCol
+      )
+      .getValues();
+
+
+  const targetData =
+    targetSheet
+      .getDataRange()
+      .getValues();
+
+
+  // ----------------------------------------------------------
+  // EXISTING CENTRAL PO MAP
+  // ----------------------------------------------------------
+
+  const existingPoMap =
+    new Map();
+
+
+  const existingPoNumberRowMap =
+    new Map();
+
+
+  for (
+    let i = 1;
+    i < targetData.length;
+    i++
+  ) {
+
+    const rowNumber =
+      i + 1;
+
+
+    const poNo =
+      cleanValueCentral_(
+        targetData[i][0]
+      );
+
+    const supplier =
+      cleanValueCentral_(
+        targetData[i][2]
+      );
+
+    const gross =
+      cleanNumberCentral_(
+        targetData[i][5]
+      );
+
+    const category =
+      cleanValueCentral_(
+        targetData[i][6]
+      );
+
+    const prNo =
+      cleanValueCentral_(
+        targetData[i][7]
+      );
+
+
+    if (
+      poNo &&
+      !existingPoNumberRowMap.has(poNo)
+    ) {
+
+      existingPoNumberRowMap.set(
+        poNo,
+        rowNumber
+      );
+
+    }
+
+
+    if (
+      !poNo ||
+      !prNo ||
+      !category ||
+      !supplier ||
+      !gross
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      makePOKeyCentral_(
+        prNo,
+        category,
+        supplier,
+        gross
+      );
+
+
+    if (
+      !existingPoMap.has(key)
+    ) {
+
+      existingPoMap.set(
+        key,
+        poNo
+      );
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // GROUP DATABASE
+  // ----------------------------------------------------------
+  //
+  // IMPORTANT:
+  //
+  // Each group stores:
+  // - firstRow
+  // - allRows
+  // - control number from FIRST ROW
+  //
+  // If ANY row in the group has an AR number, the group
+  // is treated as already processed.
+  //
+  // The number is written only to firstRow.
+  // ----------------------------------------------------------
+
+  const grouped =
+    new Map();
+
+
+  for (
+    let i = 1;
+    i < sourceData.length;
+    i++
+  ) {
+
+    const row =
+      sourceData[i];
+
+
+    const prNo =
+      cleanValueCentral_(
+        row[DB_COL_PR_NO - 1]
+      );
+
+    const purposeText =
+      cleanValueCentral_(
+        row[DB_COL_PURPOSE - 1]
+      );
+
+    const division =
+      cleanValueCentral_(
+        row[DB_COL_DIVISION - 1]
+      );
+
+    const supplier =
+      cleanValueCentral_(
+        row[DB_COL_SUPPLIER - 1]
+      );
+
+    const grossAmount =
+      cleanNumberCentral_(
+        row[DB_COL_GROSS - 1]
+      );
+
+    const category =
+      cleanValueCentral_(
+        row[DB_COL_CATEGORY - 1]
+      );
+
+    const existingPoNoInDb =
+      cleanValueCentral_(
+        row[DB_COL_PO_NO - 1]
+      );
+
+    const procurementType =
+      cleanValueCentral_(
+        row[DB_COL_PROCUREMENT_TYPE - 1]
+      );
+
+    const documentType =
+      cleanValueCentral_(
+        row[DB_COL_DOCUMENT_TYPE - 1]
+      ).toUpperCase();
+
+
+    // --------------------------------------------------------
+    // ONLY PO
+    // --------------------------------------------------------
+
+    if (
+      documentType !== "PO"
+    ) {
+
+      continue;
+
+    }
+
+
+    // --------------------------------------------------------
+    // REQUIRED / VITAL DATA
+    // --------------------------------------------------------
+
+    if (
+      !prNo ||
+      !category ||
+      !supplier ||
+      !purposeText ||
+      !grossAmount
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      makePOKeyCentral_(
+        prNo,
+        category,
+        supplier,
+        grossAmount
+      );
+
+
+    if (!grouped.has(key)) {
+
+      grouped.set(
+        key,
+        {
+          prNo: prNo,
+          purposeText: purposeText,
+          division: division,
+          supplier: supplier,
+          grossAmount: grossAmount,
+          category: category,
+          procurementType: procurementType,
+
+          firstRow:
+            i + 1,
+
+          rowNumbers: [],
+
+          existingControlNumbers: []
+
+        }
+      );
+
+    }
+
+
+    const group =
+      grouped.get(key);
+
+
+    group.rowNumbers.push(
+      i + 1
+    );
+
+
+    if (existingPoNoInDb) {
+
+      group.existingControlNumbers.push(
+        existingPoNoInDb
+      );
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // NUMBERING
+  // ----------------------------------------------------------
+
+  let nextControlNo =
+    getNextControlNumberFromAllPOsCentral_(
+      targetSheet
+    );
+
+
+  const now =
+    new Date();
+
+
+  const databaseUpdates =
+    [];
+
+
+  let rowsWritten =
+    0;
+
+
+  let matchedExistingCentral =
+    0;
+
+
+  let skippedAlreadyNumbered =
+    0;
+
+
+  // ----------------------------------------------------------
+  // PROCESS GROUPS
+  // ----------------------------------------------------------
+
+  for (
+    const [key, item]
+    of grouped.entries()
+  ) {
+
+    // ========================================================
+    // 1. LEAN CONTROL NUMBER CHECK
+    // ========================================================
+    //
+    // If ANY row of the group already has AR populated,
+    // the entire group is considered already processed.
+    //
+    // DO NOT:
+    // - search Central
+    // - write Central
+    // - generate another number
+    // - change AR
+    //
+    // ========================================================
+
+    if (
+      item.existingControlNumbers.length > 0
+    ) {
+
+      skippedAlreadyNumbered++;
+
+      Logger.log(
+        source.name +
+        ": PO GROUP SKIPPED — already has AR number: " +
+        item.existingControlNumbers.join(", ")
+      );
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 2. SEARCH CENTRAL FOR EXACT MATCH
+    // ========================================================
+    //
+    // If found:
+    // - DO NOT WRITE CENTRAL
+    // - DO NOT GENERATE NEW NUMBER
+    // - ONLY write existing number to FIRST ROW of LEAN
+    // ========================================================
+
+    if (
+      existingPoMap.has(key)
+    ) {
+
+      const existingCentralPo =
+        existingPoMap.get(key);
+
+
+      databaseUpdates.push({
+        row:
+          item.firstRow,
+
+        value:
+          existingCentralPo
+      });
+
+
+      matchedExistingCentral++;
+
+
+      Logger.log(
+        source.name +
+        ": PO MATCH FOUND IN CENTRAL → " +
+        existingCentralPo +
+        " → LEAN row " +
+        item.firstRow
+      );
+
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 3. NO CENTRAL MATCH → CREATE NEW PO
+    // ========================================================
+
+    const poNoToUse =
+      generatePONumberCentral_(
+        now,
+        nextControlNo
+      );
+
+
+    nextControlNo++;
+
+
+    const nextAvailable =
+      getNextAvailablePORowCentral_(
+        targetSheet
+      );
+
+
+    const targetRow =
+      nextAvailable.row;
+
+
+    // --------------------------------------------------------
+    // WRITE NEW PO TO CENTRAL
+    // --------------------------------------------------------
+
+    targetSheet
+      .getRange(
+        targetRow,
+        1,
+        1,
+        8
+      )
+      .setValues([[
+        poNoToUse,
+        now,
+        item.supplier,
+        buildPurposePOCentral_(
+          item.category,
+          item.purposeText,
+          item.procurementType
+        ),
+        mapDivisionPOCentral_(
+          item.division
+        ),
+        item.grossAmount,
+        item.category,
+        item.prNo
+      ]]);
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        2
+      )
+      .setNumberFormat(
+        "mmmm d, yyyy"
+      );
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        6
+      )
+      .setNumberFormat(
+        "#,##0.00"
+      );
+
+
+    // Add newly created PO to local map
+    existingPoMap.set(
+      key,
+      poNoToUse
+    );
+
+
+    existingPoNumberRowMap.set(
+      poNoToUse,
+      targetRow
+    );
+
+
+    rowsWritten++;
+
+
+    // --------------------------------------------------------
+    // WRITE PO ONLY TO FIRST ROW OF LEAN GROUP
+    // --------------------------------------------------------
+
+    databaseUpdates.push({
+      row:
+        item.firstRow,
+
+      value:
+        poNoToUse
+    });
+
+
+    Logger.log(
+      source.name +
+      ": NEW PO CREATED → " +
+      poNoToUse +
+      " → LEAN row " +
+      item.firstRow
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // WRITE AR
+  // ----------------------------------------------------------
+  //
+  // ONLY FIRST ROW OF EACH GROUP IS UPDATED.
+  // ----------------------------------------------------------
+
+  databaseUpdates.forEach(
+    update => {
+
+      sourceSheet
+        .getRange(
+          update.row,
+          DB_COL_PO_NO
+        )
+        .setValue(
+          update.value
+        );
+
+    }
+  );
+
+
+  SpreadsheetApp.flush();
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    rowsWritten +
+    " NEW PO row(s) written to Central."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    matchedExistingCentral +
+    " PO group(s) matched existing Central records."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    skippedAlreadyNumbered +
+    " PO group(s) skipped because AR already contained a number."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    databaseUpdates.length +
+    " LEAN first-row PO control number(s) updated."
+  );
+
+}
+
+
+// ============================================================
+// PO HELPERS
+// ============================================================
+
+function getNextAvailablePORowCentral_(sheet) {
+
+  const START_ROW =
+    2;
+
+  const maxRows =
+    sheet.getMaxRows();
+
+
+  const values =
+    sheet
+      .getRange(
+        START_ROW,
+        1,
+        maxRows - START_ROW + 1,
+        8
+      )
+      .getValues();
+
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+
+    const row =
+      values[i];
+
+
+    const poNo =
+      cleanValueCentral_(
+        row[0]
+      );
+
+
+    const dataBtoH =
+      row.slice(1, 8);
+
+
+    const isDataBlank =
+      dataBtoH.every(
+        cell =>
+          cleanValueCentral_(cell) === ""
+      );
+
+
+    if (isDataBlank) {
+
+      return {
+        row:
+          START_ROW + i,
+
+        existingPoNo:
+          poNo
+      };
+
+    }
+
+  }
+
+
+  sheet.insertRowAfter(
+    maxRows
+  );
+
+
+  return {
+    row:
+      maxRows + 1,
+
+    existingPoNo:
+      ""
+  };
+
+}
+
+
+function getNextControlNumberFromAllPOsCentral_(
+  sheet
+) {
+
+  const lastRow =
+    sheet.getLastRow();
+
+
+  if (lastRow < 2) {
+
+    return 1;
+
+  }
+
+
+  const values =
+    sheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        1
+      )
+      .getValues();
+
+
+  let maxControlNo =
+    0;
+
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+
+    const poNo =
+      cleanValueCentral_(
+        values[i][0]
+      );
+
+
+    if (!poNo) {
+
+      continue;
+
+    }
+
+
+    const parts =
+      poNo.split(".");
+
+
+    if (
+      parts.length !== 3
+    ) {
+
+      continue;
+
+    }
+
+
+    const controlNo =
+      parseInt(
+        parts[2],
+        10
+      );
+
+
+    if (
+      !isNaN(controlNo) &&
+      controlNo > maxControlNo
+    ) {
+
+      maxControlNo =
+        controlNo;
+
+    }
+
+  }
+
+
+  return maxControlNo + 1;
+
+}
+
+
+function generatePONumberCentral_(
+  dateObj,
+  controlNo
+) {
+
+  const year =
+    dateObj.getFullYear();
+
+
+  const month =
+    String(
+      dateObj.getMonth() + 1
+    ).padStart(
+      2,
+      "0"
+    );
+
+
+  return (
+    year +
+    "." +
+    month +
+    "." +
+    controlNo
+  );
+
+}
+
+
+function buildPurposePOCentral_(
+  category,
+  purposeText,
+  procurementType
+) {
+
+  const typeUpper =
+    cleanValueCentral_(
+      procurementType
+    ).toUpperCase();
+
+
+  const purposeLowerFirst =
+    lowerFirstLetterCentral_(
+      purposeText
+    );
+
+
+  if (
+    typeUpper === "SERVICES" ||
+    typeUpper === "SERVICE"
+  ) {
+
+    return (
+      "Provision of " +
+      toTitleCaseCentral_(category) +
+      " Services " +
+      purposeLowerFirst
+    );
+
+  }
+
+
+  return (
+    "Procurement of " +
+    toTitleCaseCentral_(category) +
+    " " +
+    purposeLowerFirst
+  );
+
+}
+
+
+function mapDivisionPOCentral_(
+  division
+) {
+
+  const map = {
+
+    PMEU: "CKGM",
+    PAS: "JPA",
+    ISS: "HCB",
+    AFU: "ECF",
+    CDMS: "JMRC"
+
+  };
+
+
+  const key =
+    cleanValueCentral_(
+      division
+    ).toUpperCase();
+
+
+  return map[key] || division;
+
+}
+
+
+function makePOKeyCentral_(
+  prNo,
+  category,
+  supplier,
+  grossAmount
+) {
+
+  return [
+
+    cleanValueCentral_(prNo)
+      .toUpperCase(),
+
+    cleanValueCentral_(category)
+      .toUpperCase(),
+
+    cleanValueCentral_(supplier)
+      .toUpperCase(),
+
+    cleanNumberCentral_(
+      grossAmount
+    )
+
+  ].join("||");
+
+}
+
+
+// ============================================================
+// ALL BAC RES
+// ============================================================
+
+function syncAllBacResCentral_() {
+
+  Logger.log(
+    "----- CENTRAL BAC RES SYNC START -----"
+  );
+
+
+  const sources =
+    getUniqueSourceDatabases_();
+
+
+  sources.forEach(
+    source => {
+
+      Logger.log(
+        "BAC RES PROCESSING: " +
+        source.name
+      );
+
+
+      const lean =
+        getLeanDatabaseCentral_(
+          source
+        );
+
+
+      syncBacResCentral_(
+        source,
+        lean.sourceSheet
+      );
+
+
+      Logger.log(
+        "BAC RES COMPLETE: " +
+        source.name
+      );
+
+    }
+  );
+
+
+  Logger.log(
+    "----- CENTRAL BAC RES SYNC COMPLETE -----"
+  );
+
+}
+
+
+// ============================================================
+// BAC RES SYNC
+// ============================================================
+
+function syncBacResCentral_(
+  source,
+  sourceSheet
+) {
+
+  const DB_COL_PR_NO = 1;
+  const DB_COL_PURPOSE = 10;
+  const DB_COL_DIVISION = 12;
+  const DB_COL_SUPPLIER = 30;
+  const DB_COL_AMOUNT = 32;
+  const DB_COL_CATEGORY = 33;
+  const DB_COL_BACRES_NO = 43;         // AQ
+  const DB_COL_PO_NO = 44;             // AR
+  const DB_COL_PROCUREMENT_TYPE = 45;  // AS
+
+
+  const targetSheet =
+    getCentralSheet_(
+      CENTRAL_SHEETS.BACRES
+    );
+
+
+  const poSheet =
+    getCentralSheet_(
+      CENTRAL_SHEETS.PURCHASE_ORDERS
+    );
+
+
+  const sourceData =
+    sourceSheet
+      .getDataRange()
+      .getValues();
+
+
+  const targetData =
+    targetSheet
+      .getDataRange()
+      .getValues();
+
+
+  const poData =
+    poSheet
+      .getDataRange()
+      .getValues();
+
+
+  if (
+    sourceData.length < 2
+  ) {
+
+    Logger.log(
+      source.name +
+      ": No DATABASE data for BAC RES."
+    );
+
+    return;
+
+  }
+
+
+  // ----------------------------------------------------------
+  // EXISTING BAC RES MAP
+  // ----------------------------------------------------------
+
+  const existingBacMap =
+    new Map();
+
+
+  for (
+    let i = 1;
+    i < targetData.length;
+    i++
+  ) {
+
+    const row =
+      targetData[i];
+
+
+    const prNo =
+      cleanValueCentral_(
+        row[0]
+      );
+
+    const supplier =
+      cleanValueCentral_(
+        row[3]
+      );
+
+    const purpose =
+      cleanValueCentral_(
+        row[4]
+      );
+
+    const amount =
+      cleanNumberCentral_(
+        row[5]
+      );
+
+    const category =
+      cleanValueCentral_(
+        row[6]
+      );
+
+    const bacResNo =
+      cleanValueCentral_(
+        row[7]
+      );
+
+    const poNo =
+      cleanValueCentral_(
+        row[12]
+      );
+
+
+    if (
+      !prNo ||
+      !category ||
+      !supplier ||
+      !amount ||
+      !purpose ||
+      !bacResNo
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      makeFullKeyWithPurposeCentral_(
+        prNo,
+        category,
+        supplier,
+        amount,
+        purpose
+      );
+
+
+    existingBacMap.set(
+      key,
+      {
+        rowNumber:
+          i + 1,
+
+        bacResNo:
+          bacResNo,
+
+        poNo:
+          poNo
+      }
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // PO MAP
+  // ----------------------------------------------------------
+  //
+  // Used ONLY to populate Central BAC RES column M.
+  //
+  // It does NOT write PO numbers back into LEAN AR.
+  // PO numbers are controlled exclusively by PO sync.
+  // ----------------------------------------------------------
+
+  const poMap =
+    new Map();
+
+
+  for (
+    let i = 1;
+    i < poData.length;
+    i++
+  ) {
+
+    const poNo =
+      cleanValueCentral_(
+        poData[i][0]
+      );
+
+    const supplier =
+      cleanValueCentral_(
+        poData[i][2]
+      );
+
+    const amount =
+      cleanNumberCentral_(
+        poData[i][5]
+      );
+
+    const category =
+      cleanValueCentral_(
+        poData[i][6]
+      );
+
+    const prNo =
+      cleanValueCentral_(
+        poData[i][7]
+      );
+
+
+    if (
+      !poNo ||
+      !prNo ||
+      !category ||
+      !supplier ||
+      !amount
+    ) {
+
+      continue;
+
+    }
+
+
+    const fullKey =
+      makeFullKeyCentral_(
+        prNo,
+        category,
+        supplier,
+        amount
+      );
+
+
+    poMap.set(
+      fullKey,
+      poNo
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // GROUP DATABASE
+  // ----------------------------------------------------------
+
+  const grouped =
+    new Map();
+
+
+  for (
+    let i = 1;
+    i < sourceData.length;
+    i++
+  ) {
+
+    const row =
+      sourceData[i];
+
+
+    const prNo =
+      cleanValueCentral_(
+        row[DB_COL_PR_NO - 1]
+      );
+
+    const purposeText =
+      cleanValueCentral_(
+        row[DB_COL_PURPOSE - 1]
+      );
+
+    const division =
+      cleanValueCentral_(
+        row[DB_COL_DIVISION - 1]
+      );
+
+    const supplier =
+      cleanValueCentral_(
+        row[DB_COL_SUPPLIER - 1]
+      );
+
+    const amount =
+      cleanNumberCentral_(
+        row[DB_COL_AMOUNT - 1]
+      );
+
+    const category =
+      cleanValueCentral_(
+        row[DB_COL_CATEGORY - 1]
+      );
+
+    const bacResNoInDb =
+      cleanValueCentral_(
+        row[DB_COL_BACRES_NO - 1]
+      );
+
+    const procurementType =
+      cleanValueCentral_(
+        row[DB_COL_PROCUREMENT_TYPE - 1]
+      );
+
+
+    // --------------------------------------------------------
+    // REQUIRED / VITAL DATA
+    // --------------------------------------------------------
+
+    if (
+      !prNo ||
+      !category ||
+      !supplier ||
+      !purposeText ||
+      !amount
+    ) {
+
+      continue;
+
+    }
+
+
+    const finalPurpose =
+      buildPurposeBacCentral_(
+        category,
+        purposeText,
+        procurementType
+      );
+
+
+    const keyWithPurpose =
+      makeFullKeyWithPurposeCentral_(
+        prNo,
+        category,
+        supplier,
+        amount,
+        finalPurpose
+      );
+
+
+    const normalKey =
+      makeFullKeyCentral_(
+        prNo,
+        category,
+        supplier,
+        amount
+      );
+
+
+    if (!grouped.has(keyWithPurpose)) {
+
+      grouped.set(
+        keyWithPurpose,
+        {
+          prNo:
+            prNo,
+
+          purposeText:
+            purposeText,
+
+          finalPurpose:
+            finalPurpose,
+
+          division:
+            division,
+
+          supplier:
+            supplier,
+
+          amount:
+            amount,
+
+          category:
+            category,
+
+          procurementType:
+            procurementType,
+
+          normalKey:
+            normalKey,
+
+          firstRow:
+            i + 1,
+
+          rowNumbers:
+            [],
+
+          existingControlNumbers:
+            []
+
+        }
+      );
+
+    }
+
+
+    const group =
+      grouped.get(
+        keyWithPurpose
+      );
+
+
+    group.rowNumbers.push(
+      i + 1
+    );
+
+
+    if (bacResNoInDb) {
+
+      group.existingControlNumbers.push(
+        bacResNoInDb
+      );
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // NUMBERING
+  // ----------------------------------------------------------
+
+  let nextControlNo =
+    getNextControlNumberFromColumnH_BacCentral_(
+      targetSheet
+    );
+
+
+  const now =
+    new Date();
+
+
+  let rowsAdded =
+    0;
+
+
+  let matchedExistingCentral =
+    0;
+
+
+  let skippedAlreadyNumbered =
+    0;
+
+
+  const databaseUpdates =
+    [];
+
+
+  // ----------------------------------------------------------
+  // PROCESS BAC RES GROUPS
+  // ----------------------------------------------------------
+
+  for (
+    const [key, item]
+    of grouped.entries()
+  ) {
+
+    // ========================================================
+    // 1. LEAN AQ CHECK
+    // ========================================================
+    //
+    // If ANY row in the group already has AQ populated,
+    // the entire BAC RES group is skipped.
+    //
+    // No Central search.
+    // No Central write.
+    // No new number.
+    //
+    // ========================================================
+
+    if (
+      item.existingControlNumbers.length > 0
+    ) {
+
+      skippedAlreadyNumbered++;
+
+      Logger.log(
+        source.name +
+        ": BAC RES GROUP SKIPPED — already has AQ number: " +
+        item.existingControlNumbers.join(", ")
+      );
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 2. SEARCH CENTRAL BAC RES
+    // ========================================================
+
+    if (
+      existingBacMap.has(key)
+    ) {
+
+      const existing =
+        existingBacMap.get(
+          key
+        );
+
+
+      // IMPORTANT:
+      // Do NOT write anything to Central.
+      //
+      // Only copy the existing control number
+      // to FIRST ROW of LEAN.
+
+      databaseUpdates.push({
+        row:
+          item.firstRow,
+
+        value:
+          existing.bacResNo
+      });
+
+
+      matchedExistingCentral++;
+
+
+      Logger.log(
+        source.name +
+        ": BAC RES MATCH FOUND IN CENTRAL → " +
+        existing.bacResNo +
+        " → LEAN row " +
+        item.firstRow
+      );
+
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 3. NO CENTRAL MATCH → CREATE NEW BAC RES
+    // ========================================================
+
+    const targetRow =
+      findNextWritableBacCentral_(
+        targetSheet
+      );
+
+
+    // --------------------------------------------------------
+    // PO NUMBER FOR CENTRAL COLUMN M ONLY
+    // --------------------------------------------------------
+
+    const poNo =
+      poMap.get(
+        item.normalKey
+      ) || "";
+
+
+    // --------------------------------------------------------
+    // WRITE A:G
+    // --------------------------------------------------------
+
+    targetSheet
+      .getRange(
+        targetRow,
+        1,
+        1,
+        7
+      )
+      .setValues([[
+        item.prNo,
+        now,
+        mapDivisionBacCentral_(
+          item.division
+        ),
+        item.supplier,
+        item.finalPurpose,
+        item.amount,
+        item.category
+      ]]);
+
+
+    // --------------------------------------------------------
+    // WRITE M - PO NO.
+    // --------------------------------------------------------
+
+    targetSheet
+      .getRange(
+        targetRow,
+        13
+      )
+      .setValue(
+        poNo
+      );
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        2
+      )
+      .setNumberFormat(
+        "mmmm d, yyyy"
+      );
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        6
+      )
+      .setNumberFormat(
+        "#,##0.00"
+      );
+
+
+    SpreadsheetApp.flush();
+
+
+    // --------------------------------------------------------
+    // GET PREPARED BAC RES NUMBER FROM H
+    // --------------------------------------------------------
+
+    let bacResNo =
+      cleanValueCentral_(
+        targetSheet
+          .getRange(
+            targetRow,
+            8
+          )
+          .getValue()
+      );
+
+
+    const currentYear =
+      now
+        .getFullYear()
+        .toString();
+
+
+    const currentMonth =
+      String(
+        now.getMonth() + 1
+      ).padStart(
+        2,
+        "0"
+      );
+
+
+    let isCurrentSeries =
+      false;
+
+
+    if (bacResNo) {
+
+      const parts =
+        bacResNo.split(".");
+
+
+      if (
+        parts.length === 3 &&
+        parts[0] === currentYear &&
+        parts[1] === currentMonth
+      ) {
+
+        isCurrentSeries =
+          true;
+
+      }
+
+    }
+
+
+    // --------------------------------------------------------
+    // GENERATE NEW BAC RES IF NECESSARY
+    // --------------------------------------------------------
+
+    if (!isCurrentSeries) {
+
+      bacResNo =
+        generateSeriesNumberBacCentral_(
+          now,
+          nextControlNo
+        );
+
+      nextControlNo++;
+
+    }
+
+
+    // --------------------------------------------------------
+    // WRITE H:J
+    // --------------------------------------------------------
+
+    targetSheet
+      .getRange(
+        targetRow,
+        8,
+        1,
+        3
+      )
+      .setValues([[
+        bacResNo,
+        bacResNo,
+        bacResNo
+      ]]);
+
+
+    rowsAdded++;
+
+
+    // --------------------------------------------------------
+    // WRITE AQ ONLY TO FIRST ROW OF LEAN GROUP
+    // --------------------------------------------------------
+
+    databaseUpdates.push({
+      row:
+        item.firstRow,
+
+      value:
+        bacResNo
+    });
+
+
+    existingBacMap.set(
+      key,
+      {
+        rowNumber:
+          targetRow,
+
+        bacResNo:
+          bacResNo,
+
+        poNo:
+          poNo
+      }
+    );
+
+
+    Logger.log(
+      source.name +
+      ": NEW BAC RES CREATED → " +
+      bacResNo +
+      " → LEAN row " +
+      item.firstRow
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // BACKFILL AQ
+  // ----------------------------------------------------------
+
+  databaseUpdates.forEach(
+    update => {
+
+      sourceSheet
+        .getRange(
+          update.row,
+          DB_COL_BACRES_NO
+        )
+        .setValue(
+          update.value
+        );
+
+    }
+  );
+
+
+  SpreadsheetApp.flush();
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    rowsAdded +
+    " NEW BAC RES row(s) written to Central."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    matchedExistingCentral +
+    " BAC RES group(s) matched existing Central records."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    skippedAlreadyNumbered +
+    " BAC RES group(s) skipped because AQ already contained a number."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    databaseUpdates.length +
+    " LEAN first-row BAC RES control number(s) updated."
+  );
+
+}
+
+
+// ============================================================
+// BAC RES HELPERS
+// ============================================================
+
+function findNextWritableBacCentral_(
+  sheet
+) {
+
+  const lastRow =
+    Math.max(
+      sheet.getLastRow(),
+      2
+    );
+
+
+  const values =
+    sheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        7
+      )
+      .getValues();
+
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+
+    const row =
+      values[i];
+
+
+    const hasData =
+      row.some(
+        cell =>
+          cleanValueCentral_(cell) !== ""
+      );
+
+
+    if (!hasData) {
+
+      return i + 2;
+
+    }
+
+  }
+
+
+  return lastRow + 1;
+
+}
+
+
+function getNextControlNumberFromColumnH_BacCentral_(
+  sheet
+) {
+
+  const lastRow =
+    sheet.getLastRow();
+
+
+  if (lastRow < 2) {
+
+    return 1;
+
+  }
+
+
+  const values =
+    sheet
+      .getRange(
+        2,
+        8,
+        lastRow - 1,
+        1
+      )
+      .getValues();
+
+
+  let maxControlNo =
+    0;
+
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+
+    const seriesNo =
+      cleanValueCentral_(
+        values[i][0]
+      );
+
+
+    if (!seriesNo) {
+
+      continue;
+
+    }
+
+
+    const parts =
+      seriesNo.split(".");
+
+
+    if (
+      parts.length !== 3
+    ) {
+
+      continue;
+
+    }
+
+
+    const controlNo =
+      parseInt(
+        parts[2],
+        10
+      );
+
+
+    if (
+      !isNaN(controlNo) &&
+      controlNo > maxControlNo
+    ) {
+
+      maxControlNo =
+        controlNo;
+
+    }
+
+  }
+
+
+  return maxControlNo + 1;
+
+}
+
+
+function generateSeriesNumberBacCentral_(
+  dateObj,
+  controlNo
+) {
+
+  const year =
+    dateObj.getFullYear();
+
+
+  const month =
+    String(
+      dateObj.getMonth() + 1
+    ).padStart(
+      2,
+      "0"
+    );
+
+
+  return (
+    year +
+    "." +
+    month +
+    "." +
+    controlNo
+  );
+
+}
+
+
+function buildPurposeBacCentral_(
+  category,
+  purposeText,
+  procurementType
+) {
+
+  const typeUpper =
+    cleanValueCentral_(
+      procurementType
+    ).toUpperCase();
+
+
+  const purposeLowerFirst =
+    lowerFirstLetterCentral_(
+      purposeText
+    );
+
+
+  if (
+    typeUpper === "SERVICES" ||
+    typeUpper === "SERVICE"
+  ) {
+
+    return (
+      "Provision of " +
+      toTitleCaseCentral_(category) +
+      " Services " +
+      purposeLowerFirst
+    );
+
+  }
+
+
+  return (
+    "Procurement of " +
+    toTitleCaseCentral_(category) +
+    " " +
+    purposeLowerFirst
+  );
+
+}
+
+
+function mapDivisionBacCentral_(
+  division
+) {
+
+  const map = {
+
+    PMEU: "CKGM",
+    PAS: "JPA",
+    ISS: "HCB",
+    AFU: "ECF",
+    CDMS: "JMRC"
+
+  };
+
+
+  return (
+    map[
+      cleanValueCentral_(
+        division
+      ).toUpperCase()
+    ] ||
+    division
+  );
+
+}
+
+
+function makeFullKeyCentral_(
+  prNo,
+  category,
+  supplier,
+  amount
+) {
+
+  return [
+
+    cleanValueCentral_(prNo)
+      .toUpperCase(),
+
+    cleanValueCentral_(category)
+      .toUpperCase(),
+
+    cleanValueCentral_(supplier)
+      .toUpperCase(),
+
+    cleanNumberCentral_(
+      amount
+    )
+
+  ].join("||");
+
+}
+
+
+function makeFullKeyWithPurposeCentral_(
+  prNo,
+  category,
+  supplier,
+  amount,
+  purpose
+) {
+
+  return [
+
+    cleanValueCentral_(prNo)
+      .toUpperCase(),
+
+    cleanValueCentral_(category)
+      .toUpperCase(),
+
+    cleanValueCentral_(supplier)
+      .toUpperCase(),
+
+    cleanNumberCentral_(
+      amount
+    ),
+
+    cleanValueCentral_(purpose)
+      .toUpperCase()
+
+  ].join("||");
+
+}
+
+
+// ============================================================
+// ALL CONTRACTS
+// ============================================================
+
+function syncAllContractNumbersCentral_() {
+
+  Logger.log(
+    "----- CENTRAL CONTRACT SYNC START -----"
+  );
+
+
+  const sources =
+    getUniqueSourceDatabases_();
+
+
+  sources.forEach(
+    source => {
+
+      Logger.log(
+        "CONTRACT PROCESSING: " +
+        source.name
+      );
+
+
+      const lean =
+        getLeanDatabaseCentral_(
+          source
+        );
+
+
+      syncContractNumbersCentral_(
+        source,
+        lean.sourceSheet
+      );
+
+
+      Logger.log(
+        "CONTRACT COMPLETE: " +
+        source.name
+      );
+
+    }
+  );
+
+
+  Logger.log(
+    "----- CENTRAL CONTRACT SYNC COMPLETE -----"
+  );
+
+}
+
+
+// ============================================================
+// CONTRACT SYNC
+// ============================================================
+
+function syncContractNumbersCentral_(
+  source,
+  sourceSheet
+) {
+
+  const DB_COL_PR_NO = 1;
+  const DB_COL_ABC = 8;
+  const DB_COL_PURPOSE = 10;
+  const DB_COL_SUPPLIER = 30;
+  const DB_COL_CONTRACT_PRICE = 32;
+  const DB_COL_CATEGORY = 33;
+  const DB_COL_CONTRACT_NO = 44;   // AR
+  const DB_COL_DOCUMENT_TYPE = 47; // AU
+
+
+  const targetSheet =
+    getCentralSheet_(
+      CENTRAL_SHEETS.CONTRACTS
+    );
+
+
+  const sourceData =
+    sourceSheet
+      .getDataRange()
+      .getValues();
+
+
+  const targetData =
+    targetSheet
+      .getDataRange()
+      .getValues();
+
+
+  // ----------------------------------------------------------
+  // EXISTING CONTRACT MAP
+  // ----------------------------------------------------------
+
+  const existingContractMap =
+    new Map();
+
+
+  let maxControlNo =
+    0;
+
+
+  for (
+    let i = 1;
+    i < targetData.length;
+    i++
+  ) {
+
+    const contractNo =
+      cleanValueCentral_(
+        targetData[i][0]
+      );
+
+
+    const prNo =
+      cleanValueCentral_(
+        targetData[i][2]
+      );
+
+
+    const supplier =
+      cleanValueCentral_(
+        targetData[i][4]
+      );
+
+
+    const amount =
+      cleanNumberCentral_(
+        targetData[i][7]
+      );
+
+
+    if (
+      contractNo
+    ) {
+
+      const match =
+        contractNo.match(
+          /(\d+)$/
+        );
+
+
+      if (match) {
+
+        const num =
+          Number(
+            match[1]
+          );
+
+
+        if (
+          num > maxControlNo
+        ) {
+
+          maxControlNo =
+            num;
+
+        }
+
+      }
+
+    }
+
+
+    if (
+      !contractNo ||
+      !supplier ||
+      !amount ||
+      !prNo
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      makeContractKeyCentral_(
+        prNo,
+        supplier,
+        amount
+      );
+
+
+    existingContractMap.set(
+      key,
+      contractNo
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // ABC MAP
+  // ----------------------------------------------------------
+
+  const abcMap =
+    new Map();
+
+
+  let currentPrNoForAbc =
+    "";
+
+  let currentCategoryForAbc =
+    "";
+
+
+  for (
+    let i = 1;
+    i < sourceData.length;
+    i++
+  ) {
+
+    const prNo =
+      cleanValueCentral_(
+        sourceData[i][
+          DB_COL_PR_NO - 1
+        ]
+      );
+
+
+    const category =
+      cleanValueCentral_(
+        sourceData[i][
+          DB_COL_CATEGORY - 1
+        ]
+      );
+
+
+    const potentialAbc =
+      cleanNumberCentral_(
+        sourceData[i][
+          DB_COL_ABC - 1
+        ]
+      );
+
+
+    if (prNo !== "") {
+
+      currentPrNoForAbc =
+        prNo;
+
+    }
+
+
+    if (category !== "") {
+
+      currentCategoryForAbc =
+        category;
+
+    }
+
+
+    if (
+      currentPrNoForAbc &&
+      potentialAbc > 0
+    ) {
+
+      abcMap.set(
+
+        currentPrNoForAbc.toUpperCase() +
+        "||" +
+        currentCategoryForAbc.toUpperCase(),
+
+        potentialAbc
+
+      );
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // GROUP CONTRACT DATA
+  // ----------------------------------------------------------
+
+  const grouped =
+    new Map();
+
+
+  let currentDocumentType =
+    "";
+
+  let currentBlockTracker =
+    "";
+
+  let currentPrNoForGrouping =
+    "";
+
+  let currentCategoryForGrouping =
+    "";
+
+
+  for (
+    let i = 1;
+    i < sourceData.length;
+    i++
+  ) {
+
+    const row =
+      sourceData[i];
+
+
+    const prNo =
+      cleanValueCentral_(
+        row[
+          DB_COL_PR_NO - 1
+        ]
+      );
+
+
+    const category =
+      cleanValueCentral_(
+        row[
+          DB_COL_CATEGORY - 1
+        ]
+      );
+
+
+    // --------------------------------------------------------
+    // CARRY CONTEXT DOWNWARD
+    // --------------------------------------------------------
+
+    if (prNo !== "") {
+
+      currentPrNoForGrouping =
+        prNo;
+
+    }
+
+
+    if (category !== "") {
+
+      currentCategoryForGrouping =
+        category;
+
+    }
+
+
+    const blockKey =
+      currentPrNoForGrouping +
+      "||" +
+      currentCategoryForGrouping;
+
+
+    if (
+      blockKey !==
+      currentBlockTracker
+    ) {
+
+      currentDocumentType =
+        "";
+
+      currentBlockTracker =
+        blockKey;
+
+    }
+
+
+    const documentTypeCell =
+      cleanValueCentral_(
+        row[
+          DB_COL_DOCUMENT_TYPE - 1
+        ]
+      );
+
+
+    if (
+      documentTypeCell !== ""
+    ) {
+
+      currentDocumentType =
+        documentTypeCell.toUpperCase();
+
+    }
+
+
+    if (
+      currentDocumentType !==
+      "CONTRACT"
+    ) {
+
+      continue;
+
+    }
+
+
+    const supplier =
+      cleanValueCentral_(
+        row[
+          DB_COL_SUPPLIER - 1
+        ]
+      );
+
+
+    const contractPrice =
+      cleanNumberCentral_(
+        row[
+          DB_COL_CONTRACT_PRICE - 1
+        ]
+      );
+
+
+    const existingContractNo =
+      cleanValueCentral_(
+        row[
+          DB_COL_CONTRACT_NO - 1
+        ]
+      );
+
+
+    // --------------------------------------------------------
+    // REQUIRED / VITAL DATA
+    // --------------------------------------------------------
+
+    if (
+      !currentPrNoForGrouping ||
+      !supplier ||
+      !contractPrice
+    ) {
+
+      continue;
+
+    }
+
+
+    const key =
+      makeContractKeyCentral_(
+        currentPrNoForGrouping,
+        supplier,
+        contractPrice
+      );
+
+
+    if (!grouped.has(key)) {
+
+      const abcKey =
+        currentPrNoForGrouping.toUpperCase() +
+        "||" +
+        currentCategoryForGrouping.toUpperCase();
+
+
+      const prAbc =
+        abcMap.has(abcKey)
+          ? abcMap.get(abcKey)
+          : 0;
+
+
+      grouped.set(
+        key,
+        {
+          prNo:
+            currentPrNoForGrouping,
+
+          supplier:
+            supplier,
+
+          purpose:
+            row[
+              DB_COL_PURPOSE - 1
+            ],
+
+          abc:
+            prAbc,
+
+          contractPrice:
+            contractPrice,
+
+          firstRow:
+            i + 1,
+
+          databaseRows:
+            [],
+
+          existingControlNumbers:
+            []
+
+        }
+      );
+
+    }
+
+
+    const group =
+      grouped.get(key);
+
+
+    group.databaseRows.push(
+      i + 1
+    );
+
+
+    if (existingContractNo) {
+
+      group.existingControlNumbers.push(
+        existingContractNo
+      );
+
+    }
+
+  }
+
+
+  // ----------------------------------------------------------
+  // NUMBERING
+  // ----------------------------------------------------------
+
+  let nextContractControlNo =
+    maxControlNo + 1;
+
+
+  let rowsWritten =
+    0;
+
+
+  let matchedExistingCentral =
+    0;
+
+
+  let skippedAlreadyNumbered =
+    0;
+
+
+  const updates =
+    [];
+
+
+  const today =
+    new Date();
+
+
+  // ----------------------------------------------------------
+  // PROCESS CONTRACT GROUPS
+  // ----------------------------------------------------------
+
+  for (
+    const [key, item]
+    of grouped
+  ) {
+
+    // ========================================================
+    // 1. LEAN AR CHECK
+    // ========================================================
+    //
+    // If ANY row in the contract group already has AR,
+    // skip the ENTIRE group.
+    // ========================================================
+
+    if (
+      item.existingControlNumbers.length > 0
+    ) {
+
+      skippedAlreadyNumbered++;
+
+      Logger.log(
+        source.name +
+        ": CONTRACT GROUP SKIPPED — already has AR number: " +
+        item.existingControlNumbers.join(", ")
+      );
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 2. SEARCH CENTRAL CONTRACT SHEET
+    // ========================================================
+    //
+    // If match exists:
+    //
+    // DO NOT WRITE CENTRAL.
+    //
+    // Only copy existing number to first LEAN row.
+    // ========================================================
+
+    if (
+      existingContractMap.has(key)
+    ) {
+
+      const existingContractNo =
+        existingContractMap.get(key);
+
+
+      updates.push({
+        row:
+          item.firstRow,
+
+        value:
+          existingContractNo
+      });
+
+
+      matchedExistingCentral++;
+
+
+      Logger.log(
+        source.name +
+        ": CONTRACT MATCH FOUND IN CENTRAL → " +
+        existingContractNo +
+        " → LEAN row " +
+        item.firstRow
+      );
+
+
+      continue;
+
+    }
+
+
+    // ========================================================
+    // 3. NO CENTRAL MATCH → CREATE NEW CONTRACT
+    // ========================================================
+
+    const contractNo =
+      generateContractNumberCentral_(
+        today,
+        nextContractControlNo
+      );
+
+
+    nextContractControlNo++;
+
+
+    const nextAvailable =
+      getNextAvailableContractRowCentral_(
+        targetSheet
+      );
+
+    const targetRow =
+      nextAvailable.row;
+
+
+    // --------------------------------------------------------
+    // WRITE NEW CONTRACT TO CENTRAL
+    // --------------------------------------------------------
+
+    targetSheet
+      .getRange(
+        targetRow,
+        1
+      )
+      .setValue(
+        contractNo
+      );
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        3,
+        1,
+        6
+      )
+      .setValues([[
+        item.prNo,
+        today,
+        item.supplier,
+        item.purpose,
+        item.abc,
+        item.contractPrice
+      ]]);
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        4
+      )
+      .setNumberFormat(
+        "mmmm d, yyyy"
+      );
+
+
+    targetSheet
+      .getRange(
+        targetRow,
+        8
+      )
+      .setNumberFormat(
+        "#,##0.00"
+      );
+
+
+    existingContractMap.set(
+      key,
+      contractNo
+    );
+
+
+    rowsWritten++;
+
+
+    // --------------------------------------------------------
+    // WRITE CONTRACT NUMBER ONLY TO FIRST ROW OF LEAN
+    // --------------------------------------------------------
+
+    updates.push({
+      row:
+        item.firstRow,
+
+      value:
+        contractNo
+    });
+
+
+    Logger.log(
+      source.name +
+      ": NEW CONTRACT CREATED → " +
+      contractNo +
+      " → LEAN row " +
+      item.firstRow
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // WRITE CONTRACT NUMBER BACK TO AR
+  // ----------------------------------------------------------
+  //
+  // ONLY FIRST ROW OF EACH GROUP.
+  // ----------------------------------------------------------
+
+  updates.forEach(
+    update => {
+
+      sourceSheet
+        .getRange(
+          update.row,
+          DB_COL_CONTRACT_NO
+        )
+        .setValue(
+          update.value
+        );
+
+    }
+  );
+
+
+  SpreadsheetApp.flush();
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    rowsWritten +
+    " NEW Contract row(s) written to Central."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    matchedExistingCentral +
+    " Contract group(s) matched existing Central records."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    skippedAlreadyNumbered +
+    " Contract group(s) skipped because AR already contained a number."
+  );
+
+
+  Logger.log(
+    source.name +
+    ": " +
+    updates.length +
+    " LEAN first-row Contract control number(s) updated."
+  );
+
+}
+
+
+// ============================================================
+// CONTRACT HELPERS
+// ============================================================
+
+function getNextAvailableContractRowCentral_(
+  sheet
+) {
+
+  const START_ROW =
+    2;
+
+  const maxRows =
+    sheet.getMaxRows();
+
+
+  const values =
+    sheet
+      .getRange(
+        START_ROW,
+        1,
+        maxRows - START_ROW + 1,
+        8
+      )
+      .getValues();
+
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+
+    const contractNo =
+      cleanValueCentral_(
+        values[i][0]
+      );
+
+
+    const data =
+      values[i].slice(
+        2,
+        8
+      );
+
+
+    const blank =
+      data.every(
+        cell =>
+          cleanValueCentral_(cell) === ""
+      );
+
+
+    if (blank) {
+
+      return {
+        row:
+          START_ROW + i,
+
+        existingContractNo:
+          contractNo
+      };
+
+    }
+
+  }
+
+
+  sheet.insertRowAfter(
+    maxRows
+  );
+
+
+  return {
+    row:
+      maxRows + 1,
+
+    existingContractNo:
+      ""
+  };
+
+}
+
+
+function generateContractNumberCentral_(
+  dateObj,
+  controlNo
+) {
+
+  const year =
+    dateObj.getFullYear();
+
+
+  const month =
+    String(
+      dateObj.getMonth() + 1
+    ).padStart(
+      2,
+      "0"
+    );
+
+
+  return (
+    year +
+    "." +
+    month +
+    "." +
+    controlNo
+  );
+
+}
+
+
+function makeContractKeyCentral_(
+  prNo,
+  supplier,
+  contractPrice
+) {
+
+  return [
+
+    cleanValueCentral_(
+      prNo
+    ).toUpperCase(),
+
+    cleanValueCentral_(
+      supplier
+    ).toUpperCase(),
+
+    cleanNumberCentral_(
+      contractPrice
+    )
+
+  ].join("||");
+
+}
+
+
+// ============================================================
+// COMMON HELPERS
+// ============================================================
+
+function lowerFirstLetterCentral_(
+  text
+) {
+
+  text =
+    cleanValueCentral_(
+      text
+    );
+
+
+  if (!text) {
+
+    return "";
+
+  }
+
+
+  return (
+    text.charAt(0).toLowerCase() +
+    text.slice(1)
+  );
+
+}
+
+
+function toTitleCaseCentral_(
+  text
+) {
+
+  return String(text)
+    .toLowerCase()
+    .split(" ")
+    .map(
+      word =>
+        word
+          ? word.charAt(0).toUpperCase() +
+            word.slice(1)
+          : ""
+    )
+    .join(" ");
+
+}
+
+
+function cleanValueCentral_(
+  value
+) {
+
+  return String(
+    value == null
+      ? ""
+      : value
+  ).trim();
+
+}
+
+
+function cleanNumberCentral_(
+  value
+) {
+
+  if (
+    value === "" ||
+    value == null
+  ) {
+
+    return 0;
+
+  }
+
+
+  const cleaned =
+    String(value)
+      .replace(
+        /[₱,\s]/g,
+        ""
+      )
+      .trim();
+
+
+  return (
+    Number(cleaned) ||
+    0
+  );
+
+}
+
+
+// ============================================================
+// CENTRAL MANUAL TEST
+// ============================================================
+//
+// This performs the actual central synchronization once.
+// It does NOT create a trigger.
+//
+// USE THIS FIRST BEFORE setupCentralAutoRunTrigger().
+// ============================================================
+
+function testCentralPipeline() {
+
+  Logger.log(
+    "================================================"
+  );
+
+  Logger.log(
+    "CENTRAL MANUAL PIPELINE TEST START"
+  );
+
+  Logger.log(
+    "================================================"
+  );
+
+
+  const lock =
+    LockService.getScriptLock();
+
+
+  if (
+    !lock.tryLock(
+      CENTRAL_LOCK_TIMEOUT
+    )
+  ) {
+
+    throw new Error(
+      "Another central process is currently running."
+    );
+
+  }
+
+
+  try {
+
+    syncAllPurchaseOrdersCentral_();
+
+    SpreadsheetApp.flush();
+
+    syncAllBacResCentral_();
+
+    SpreadsheetApp.flush();
+
+    syncAllContractNumbersCentral_();
+
+    SpreadsheetApp.flush();
+
+
+    Logger.log(
+      "================================================"
+    );
+
+    Logger.log(
+      "CENTRAL MANUAL PIPELINE TEST COMPLETE"
+    );
+
+    Logger.log(
+      "================================================"
+    );
+
+
+  } finally {
+
+    lock.releaseLock();
+
+  }
+
+}
