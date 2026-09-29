@@ -1,0 +1,244 @@
+function submitForm() {
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getActiveSheet();
+    const sheetName = sheet.getName();
+    const db = ss.getSheetByName("Database");
+    const ui = SpreadsheetApp.getUi();
+
+    if (sheetName !== "FORM" && sheetName !== "FORM 2") {
+      return ui.alert("⚠️ Submission is only allowed from Form or Form 2.");
+    }
+
+    showProgress("⏳ Processing submission...");
+
+    // ======================================
+    // 1. HEADER VALUES
+    // ======================================
+    const vals = sheet.getRangeList([
+      "B1", "B2", "B3", "B4", "B5",
+      "B6", "B7", "B8", "B9", "F12"
+    ]).getRanges().map(r => r.getValue());
+
+    const [
+      fund,
+      title,
+      targetMonth,
+      date,
+      venue,
+      budget,
+      gad,
+      admin,
+      net,
+      total
+    ] = vals;
+
+    if (!title) {
+      return ui.alert("⚠️ Please enter an Activity Title.");
+    }
+
+    const netAmount = Math.round(Number(net) * 100) / 100;
+    const totalAmount = Math.round(Number(total) * 100) / 100;
+
+    if (totalAmount > netAmount) {
+      return ui.alert("⚠️ Overbudget, please adjust!");
+    }
+
+    if (totalAmount < netAmount) {
+      return ui.alert("⚠️ Underbudget, please adjust!");
+    }
+
+    // Normalize title
+    const cleanTitle = title.toString().trim().toLowerCase();
+
+    // ======================================
+    // 2. PROCUREMENT DATES
+    // BASED ON TARGET MONTH (B3)
+    // 2 MONTHS BEFORE TARGET MONTH
+    // ======================================
+    const procurementDate = shiftMonthYear(targetMonth, 2);
+
+    const startOfProcurement = procurementDate;
+    const endOfProcurement = procurementDate;
+
+    // ======================================
+    // 3. READ TABLE
+    // ROW 13 = HEADER
+    // ROW 14 ONWARD = DATA
+    // ======================================
+    const startRow = 14;
+    const lastRow = sheet.getLastRow();
+    const numRows = lastRow - startRow + 1;
+
+    if (numRows < 1) {
+      return ui.alert("⚠️ No activities listed.");
+    }
+
+    const data = sheet
+      .getRange(startRow, 1, numRows, 7)
+      .getValues()
+      .filter(r => r[0] && r[1]);
+
+    if (!data.length) {
+      return ui.alert("⚠️ No activities listed.");
+    }
+
+    // ======================================
+    // 4. PREPARE DATABASE ROWS
+    //
+    // DATABASE:
+    // A  TIMESTAMP
+    // B  EMAIL
+    // C  FUND
+    // D  ACTIVITY TITLE
+    // E  TARGET MONTH
+    // F  DATE OF DELIVERY
+    // G  START OF PROCUREMENT
+    // H  END OF PROCUREMENT
+    // I  VENUE
+    // J  BUDGET
+    // K  GAD/IPs
+    // L  ADMIN COST
+    // M  NET AMOUNT
+    // N  CATEGORY
+    // O  ITEM DESCRIPTION
+    // P  UNIT
+    // Q  UNIT PRICE
+    // R  QUANTITY
+    // S  TOTAL AMOUNT
+    // T  REMARKS
+    // ======================================
+    const timestamp = new Date();
+    const user = Session.getActiveUser().getEmail();
+
+    const newRows = data.map(r => [
+      timestamp,          // A TIMESTAMP
+      user,               // B EMAIL
+      fund,               // C FUND
+      title,              // D ACTIVITY TITLE
+      targetMonth,        // E TARGET MONTH
+      date,               // F DATE OF DELIVERY
+      startOfProcurement, // G START OF PROCUREMENT
+      endOfProcurement,   // H END OF PROCUREMENT
+      venue,              // I VENUE
+      budget,             // J BUDGET
+      gad,                // K GAD/IPs
+      admin,              // L ADMIN COST
+      net,                // M NET AMOUNT
+      ...r                // N:T CATEGORY through REMARKS
+    ]);
+
+    SpreadsheetApp.flush();
+
+    // ======================================
+    // 5. REMOVE EXISTING ACTIVITY
+    // ACTIVITY TITLE = DATABASE COLUMN D
+    // ======================================
+    const dbData = db.getDataRange().getValues();
+    const header = dbData.length ? dbData.shift() : [];
+
+    const remainingData = dbData.filter(row =>
+      row[3]?.toString().trim().toLowerCase() !== cleanTitle
+    );
+
+    db.clearContents();
+
+    // Restore header
+    if (header.length) {
+      db.getRange(1, 1, 1, header.length)
+        .setValues([header]);
+    }
+
+    // Restore remaining records
+    if (remainingData.length) {
+      db.getRange(
+        2,
+        1,
+        remainingData.length,
+        remainingData[0].length
+      ).setValues(remainingData);
+    }
+
+    // Add new records
+    db.getRange(
+      db.getLastRow() + 1,
+      1,
+      newRows.length,
+      newRows[0].length
+    ).setValues(newRows);
+
+    // ======================================
+    // 6. CLEAR FORM
+    // ======================================
+    sheet.getRangeList([
+      "B2", "B3", "B4", "B5",
+      "B6", "B7", "B8"
+    ]).getRanges().forEach(r => r.clearContent());
+
+    // Clear ONLY row 14 onward
+    sheet
+      .getRange(startRow, 1, numRows, 7)
+      .clearContent();
+
+    hideProgress("✅ Your entry was replaced successfully!");
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+/* =========================
+   DATE HELPER
+   2 MONTHS BACK
+========================= */
+
+function shiftMonthYear(dateVal, monthsBack) {
+  let month, year;
+
+  if (dateVal instanceof Date) {
+    month = dateVal.getMonth() + 1;
+    year = dateVal.getFullYear();
+  } else {
+    const parts = dateVal.toString().trim().split("/");
+
+    month = parseInt(parts[0], 10);
+    year = parseInt(parts[2] || parts[1], 10);
+  }
+
+  let newMonth = month - monthsBack;
+  let newYear = year;
+
+  while (newMonth <= 0) {
+    newMonth += 12;
+    newYear -= 1;
+  }
+
+  const mm = newMonth.toString().padStart(2, "0");
+
+  return `${mm}/${newYear}`;
+}
+
+
+/* =========================
+   TOAST HELPERS
+========================= */
+
+function showProgress(message) {
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    message,
+    "Please wait...",
+    4
+  );
+}
+
+function hideProgress(message) {
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    message,
+    "Done",
+    4
+  );
+}
