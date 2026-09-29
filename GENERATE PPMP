@@ -1,0 +1,646 @@
+function generateIndicativePPMP() {
+
+  // ============================================================
+  // SETTINGS
+  // ============================================================
+
+  const sourceSS =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  const DB_SHEET_NAME =
+    "DATABASE";
+
+  const UPDATE_LINKS_SHEET_NAME =
+    "UPDATE LINKS";
+
+  // ============================================================
+  // UPDATE LINKS
+  //
+  // B7 = INDICATIVE PPMP TEMPLATE SPREADSHEET ID
+  // B9 = DESTINATION FOLDER ID
+  // ============================================================
+
+  const updateLinksSheet =
+    sourceSS.getSheetByName(
+      UPDATE_LINKS_SHEET_NAME
+    );
+
+  if (!updateLinksSheet) {
+    throw new Error(
+      'Sheet "UPDATE LINKS" was not found.'
+    );
+  }
+
+  const TEMPLATE_FILE_ID =
+    updateLinksSheet
+      .getRange("B7")
+      .getDisplayValue()
+      .trim();
+
+  const OUTPUT_FOLDER_ID =
+    updateLinksSheet
+      .getRange("B9")
+      .getDisplayValue()
+      .trim();
+
+  // ============================================================
+  // VALIDATE UPDATE LINKS
+  // ============================================================
+
+  if (!TEMPLATE_FILE_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate Indicative PPMP.\n\n" +
+      "UPDATE LINKS!B7 is empty.\n\n" +
+      "Please enter the Indicative PPMP Template Spreadsheet ID."
+    );
+    return;
+  }
+
+  if (!OUTPUT_FOLDER_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate Indicative PPMP.\n\n" +
+      "UPDATE LINKS!B9 is empty.\n\n" +
+      "Please enter the Destination Folder ID."
+    );
+    return;
+  }
+
+  const TEMPLATE_SHEET_NAME =
+    "Indicative PPMP (2)";
+
+  const START_ROW = 18;
+  const TOTAL_BUDGET_ROW = 19;
+  const PPMP_COLUMNS = 12;
+  // ============================================================
+  // GET DATABASE
+  // ============================================================
+
+  const dbSheet =
+    sourceSS.getSheetByName(DB_SHEET_NAME);
+
+  if (!dbSheet) {
+    throw new Error(
+      `Sheet "${DB_SHEET_NAME}" was not found.`
+    );
+  }
+
+
+
+
+  // ============================================================
+  // GET PROGRAM
+  // DATABASE C2 = PROGRAM
+  // ============================================================
+
+  const program =
+    dbSheet
+      .getRange("C2")
+      .getDisplayValue()
+      .trim();
+
+
+  // ============================================================
+  // GET DATABASE DATA
+  //
+  // A:S
+  //
+  // C = Program
+  // D = Training / Activity
+  // F = Unit Cost
+  // G = Quantity
+  // H = Total
+  // N = Category
+  // O = Item
+  // R = PPMP Column 3
+  // S = PPMP Column 10
+  // ============================================================
+
+  const lastRow =
+    dbSheet.getLastRow();
+
+  if (lastRow < 2) {
+    throw new Error(
+      "No data found in DATABASE."
+    );
+  }
+
+  const databaseData =
+    dbSheet
+      .getRange(
+        2,
+        1,
+        lastRow - 1,
+        19
+      )
+      .getDisplayValues();
+
+
+  // ============================================================
+  // REMOVE COMPLETELY BLANK ROWS
+  // ============================================================
+
+  const rows =
+    databaseData.filter(row =>
+      row.some(value =>
+        String(value).trim() !== ""
+      )
+    );
+
+  if (rows.length === 0) {
+    throw new Error(
+      "No usable data found in DATABASE."
+    );
+  }
+
+  // ============================================================
+  // SORT DATABASE ROWS BY COLUMN E
+  // ============================================================
+
+  rows.sort((a, b) => {
+    return String(a[4]).localeCompare(
+      String(b[4]),
+      undefined,
+      {
+        numeric: true,
+        sensitivity: "base"
+      }
+    );
+  });
+
+
+  // ============================================================
+  // BUILD GROUPED PPMP OUTPUT
+  //
+  // TRAINING / ACTIVITY
+  //     CATEGORY
+  //         ITEM
+  //         ITEM
+  //     CATEGORY
+  //         ITEM
+  //
+  // Training = DATABASE D
+  // Category = DATABASE N
+  // Item     = DATABASE O
+  // ============================================================
+
+  const output = [];
+
+  // Keep track of what type of row we generate.
+  // This is used later for formatting.
+  const rowTypes = [];
+
+  let previousTraining = "";
+  let previousCategory = "";
+
+  rows.forEach(row => {
+
+    // ----------------------------------------------------------
+    // DATABASE VALUES
+    // ----------------------------------------------------------
+
+    const training =
+      String(row[3]).trim();       // D
+
+    const category =
+      String(row[13]).trim();      // N
+
+    const item =
+      String(row[14]).trim();      // O
+
+    const ppmpCol3 =
+      row[17];                     // R
+
+    const ppmpCol6 =
+      row[6];                      // G
+
+    const ppmpCol7 =
+      row[7];                      // H
+
+    const ppmpCol8 =
+      row[5];                      // F
+
+    const ppmpCol10 =
+      row[18];                     // S
+
+
+    // ----------------------------------------------------------
+    // SKIP COMPLETELY BLANK ROW
+    // ----------------------------------------------------------
+
+    if (
+      training === "" &&
+      item === ""
+    ) {
+      return;
+    }
+
+
+    // ----------------------------------------------------------
+    // TRAINING / ACTIVITY CHANGED
+    // ----------------------------------------------------------
+
+    if (
+      training !== "" &&
+      training !== previousTraining
+    ) {
+
+      output.push([
+        training,     // Column 1
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ]);
+
+      // Mark this generated row as TRAINING
+      rowTypes.push("TRAINING");
+
+      previousTraining = training;
+
+      // Reset category when training changes
+      previousCategory = "";
+    }
+
+
+    // ----------------------------------------------------------
+    // CATEGORY CHANGED
+    // ----------------------------------------------------------
+
+    if (
+      category !== "" &&
+      category !== previousCategory
+    ) {
+
+      output.push([
+        category.toUpperCase(),   // Column 1
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ]);
+
+      // Mark this generated row as CATEGORY
+      rowTypes.push("CATEGORY");
+
+      previousCategory = category;
+    }
+
+
+    // ----------------------------------------------------------
+    // ITEM ROW
+    // ----------------------------------------------------------
+
+    if (item !== "") {
+
+      output.push([
+        item,         // PPMP Column 1
+        "GOODS",      // PPMP Column 2
+        ppmpCol3,     // PPMP Column 3 = DATABASE R
+        "",           // PPMP Column 4
+        "NO",         // PPMP Column 5
+        ppmpCol6,     // PPMP Column 6 = DATABASE G
+        ppmpCol7,     // PPMP Column 7 = DATABASE H
+        ppmpCol8,     // PPMP Column 8 = DATABASE F
+        "GoP",        // PPMP Column 9
+        ppmpCol10,    // PPMP Column 10 = DATABASE S
+        "NONE",       // PPMP Column 11
+        "NONE"        // PPMP Column 12
+      ]);
+
+      // Mark this generated row as ITEM
+      rowTypes.push("ITEM");
+    }
+
+  });
+
+
+  // ============================================================
+  // VALIDATE OUTPUT
+  // ============================================================
+
+  if (output.length === 0) {
+    throw new Error(
+      "No PPMP data could be generated from DATABASE."
+    );
+  }
+
+
+  // ============================================================
+  // COPY TEMPLATE
+  // ============================================================
+
+  const templateFile =
+    DriveApp.getFileById(
+      TEMPLATE_FILE_ID
+    );
+
+  const outputFolder =
+    DriveApp.getFolderById(
+      OUTPUT_FOLDER_ID
+    );
+
+  const generatedFileName =
+    `PPMP ${program}`;
+
+  const generatedFile =
+    templateFile.makeCopy(
+      generatedFileName,
+      outputFolder
+    );
+
+
+  // ============================================================
+  // OPEN GENERATED PPMP
+  // ============================================================
+
+  const generatedSS =
+    SpreadsheetApp.openById(
+      generatedFile.getId()
+    );
+
+  const ppmpSheet =
+    generatedSS.getSheetByName(
+      TEMPLATE_SHEET_NAME
+    );
+
+  if (!ppmpSheet) {
+    throw new Error(
+      `Sheet "${TEMPLATE_SHEET_NAME}" was not found in the generated PPMP.`
+    );
+  }
+
+
+  // ============================================================
+  // CALCULATE REQUIRED ROWS
+  // ============================================================
+
+  const requiredRows =
+    output.length;
+
+  const rowsToInsert =
+    Math.max(
+      0,
+      requiredRows - 1
+    );
+
+
+  // ============================================================
+  // INSERT ADDITIONAL ROWS
+  // ============================================================
+
+  if (rowsToInsert > 0) {
+
+    ppmpSheet.insertRowsBefore(
+      TOTAL_BUDGET_ROW,
+      rowsToInsert
+    );
+
+  }
+
+
+  // ============================================================
+  // NEW TOTAL BUDGET ROW
+  // ============================================================
+
+  const newTotalBudgetRow =
+    TOTAL_BUDGET_ROW +
+    rowsToInsert;
+
+
+  // ============================================================
+  // COPY TEMPLATE FORMATTING
+  // ============================================================
+
+  if (requiredRows > 1) {
+
+    const templateRow =
+      ppmpSheet.getRange(
+        START_ROW,
+        1,
+        1,
+        PPMP_COLUMNS
+      );
+
+    const additionalRows =
+      ppmpSheet.getRange(
+        START_ROW + 1,
+        1,
+        requiredRows - 1,
+        PPMP_COLUMNS
+      );
+
+    templateRow.copyTo(
+      additionalRows,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false
+    );
+
+  }
+
+
+  // ============================================================
+  // WRITE GENERATED PPMP DATA
+  // ============================================================
+
+  ppmpSheet
+    .getRange(
+      START_ROW,
+      1,
+      requiredRows,
+      PPMP_COLUMNS
+    )
+    .setValues(output);
+
+
+  // ============================================================
+  // DATE FORMATTING
+  //
+  // PPMP Columns 6, 7, 8
+  // ============================================================
+
+  ppmpSheet
+    .getRange(
+      START_ROW,
+      6,
+      requiredRows,
+      3
+    )
+    .setNumberFormat(
+      "MM/yyyy"
+    );
+
+
+  // ============================================================
+  // TRAINING / ACTIVITY + CATEGORY FORMATTING
+  //
+  // TRAINING = BOLD
+  // CATEGORY = BOLD + UPPERCASE
+  // ITEM = NORMAL
+  // ============================================================
+
+  rowTypes.forEach((type, index) => {
+
+    const sheetRow =
+      START_ROW + index;
+
+    const cell =
+      ppmpSheet.getRange(
+        sheetRow,
+        1
+      );
+
+    if (type === "TRAINING") {
+
+      cell.setFontWeight("bold");
+
+    }
+
+    else if (type === "CATEGORY") {
+
+      cell
+        .setFontWeight("bold")
+        .setValue(
+          String(cell.getValue()).toUpperCase()
+        );
+
+    }
+
+    else {
+
+      cell.setFontWeight("normal");
+
+    }
+
+  });
+
+
+  // ============================================================
+  // TOTAL BUDGET FORMULA
+  // ============================================================
+
+  const lastPPMPRow =
+    START_ROW +
+    requiredRows -
+    1;
+
+  const totalBudgetFormula =
+    `=SUM(J${START_ROW}:J${lastPPMPRow})`;
+
+  ppmpSheet
+    .getRange(
+      newTotalBudgetRow,
+      10
+    )
+    .setFormula(
+      totalBudgetFormula
+    );
+
+
+  // ============================================================
+  // REPLACE {{PROGRAM}}
+  //
+  // PROGRAM = DATABASE C2
+  // ============================================================
+
+  const dataRange =
+    ppmpSheet.getDataRange();
+
+  const programMatches =
+    dataRange
+      .createTextFinder(
+        "{{PROGRAM}}"
+      )
+      .findAll();
+
+  programMatches.forEach(cell => {
+
+    const currentValue =
+      cell.getDisplayValue();
+
+    if (
+      typeof currentValue === "string" &&
+      currentValue.includes("{{PROGRAM}}")
+    ) {
+
+      const replacedValue =
+        currentValue.replace(
+          /{{PROGRAM}}/g,
+          program
+        );
+
+      cell.setValue(
+        replacedValue
+      );
+
+    }
+
+  });
+
+
+  // ============================================================
+  // SAVE GENERATED PPMP
+  // ============================================================
+
+  SpreadsheetApp.flush();
+
+
+  // ============================================================
+  // GENERATED PPMP URL
+  // ============================================================
+
+  const generatedPPMPUrl =
+    generatedSS.getUrl();
+
+
+  // ============================================================
+  // TIMESTAMP IN W2
+  // ============================================================
+
+  sourceSS
+    .getRange("W2")
+    .setValue(
+      new Date()
+    )
+    .setNumberFormat(
+      "MM/dd/yyyy HH:mm:ss"
+    );
+
+
+  // ============================================================
+  // GENERATED PPMP LINK IN X2
+  // ============================================================
+
+  sourceSS
+    .getRange("X2")
+    .setFormula(
+      `=HYPERLINK("${generatedPPMPUrl}","OPEN GENERATED PPMP")`
+    );
+
+
+  // ============================================================
+  // FINAL FLUSH
+  // ============================================================
+
+  SpreadsheetApp.flush();
+
+
+  // ============================================================
+  // RETURN URL
+  // ============================================================
+
+  return generatedPPMPUrl;
+}
