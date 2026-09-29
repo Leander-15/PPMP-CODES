@@ -1,0 +1,1557 @@
+function generatePRGoodsWithSchedule() {
+
+  // ============================================================
+  // SETTINGS
+  // ============================================================
+
+  // SOURCE = SAME SPREADSHEET WHERE THIS APPS SCRIPT IS INSTALLED
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // SOURCE SHEET
+    const SOURCE_SHEET_NAME = "GENERATE PR GOODS W/ SCHED";
+
+    const sourceSheet = ss.getSheetByName(SOURCE_SHEET_NAME);
+
+    if (!sourceSheet) {
+      SpreadsheetApp.getUi().alert(
+        'Sheet "' + SOURCE_SHEET_NAME + '" was not found.'
+      );
+      return;
+    }
+
+  // ============================================================
+  // UPDATE LINKS
+  // B6 = PR TEMPLATE SPREADSHEET ID
+  // B8 = DESTINATION FOLDER ID
+  // ============================================================
+
+  const updateLinksSheet =
+    ss.getSheetByName("UPDATE LINKS");
+
+  if (!updateLinksSheet) {
+    throw new Error(
+      'Sheet "UPDATE LINKS" was not found.'
+    );
+  }
+
+  const PR_GOODS_TEMPLATE_ID =
+    updateLinksSheet
+      .getRange("B6")
+      .getDisplayValue()
+      .trim();
+
+  const DESTINATION_FOLDER_ID =
+    updateLinksSheet
+      .getRange("B8")
+      .getDisplayValue()
+      .trim();
+
+  // ============================================================
+  // VALIDATE UPDATE LINKS
+  // ============================================================
+
+  if (!PR_GOODS_TEMPLATE_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "UPDATE LINKS!B6 is empty.\n\n" +
+      "Please enter the PR Template Spreadsheet ID."
+    );
+    return;
+  }
+
+  if (!DESTINATION_FOLDER_ID) {
+    SpreadsheetApp.getUi().alert(
+      "Cannot generate PR.\n\n" +
+      "UPDATE LINKS!B8 is empty.\n\n" +
+      "Please enter the Destination Folder ID."
+    );
+    return;
+  }
+
+  // TEMPLATE SHEETS
+  const PR_GOODS_TEMPLATE_SHEET_NAME = "PR";
+  const SCHEDULE_TEMPLATE_SHEET_NAME = "SCHEDULE";
+
+
+  // ============================================================
+  // CHECK SOURCE DATA
+  // ============================================================
+
+  const lastRow =
+    sourceSheet.getLastRow();
+
+  if (lastRow < 8) {
+
+    SpreadsheetApp.getUi().alert(
+      "No data found starting from row 8."
+    );
+
+    return;
+  }
+
+
+  // ============================================================
+  // GET PR SOURCE DATA
+  // ============================================================
+
+  /*
+    SOURCE SHEET:
+
+    A = UNIT
+    B = ITEM DESCRIPTION
+    C = QUANTITY
+    D = UNIT COST
+    E = TOTAL COST
+
+    HEADER/TITLE:
+    C = blank
+    E = blank
+  */
+
+  const prData =
+    sourceSheet
+      .getRange(
+        8,
+        1,
+        lastRow - 7,
+        5
+      )
+      .getValues();
+
+
+  // ============================================================
+  // REMOVE COMPLETELY EMPTY PR ROWS
+  // ============================================================
+
+  const prRows =
+    prData.filter(row =>
+      row.some(value =>
+        value !== "" &&
+        value !== null
+      )
+    );
+
+
+  if (prRows.length === 0) {
+
+    SpreadsheetApp.getUi().alert(
+      "No valid PR data found."
+    );
+
+    return;
+  }
+
+
+  // ============================================================
+  // GET GENERAL VALUES
+  // ============================================================
+
+  // F8 = ABC
+  const abc =
+    sourceSheet
+      .getRange("F8")
+      .getDisplayValue();
+
+      // G8 = PURPOSE
+  const purpose =
+    sourceSheet
+      .getRange("G8")
+      .getDisplayValue();
+
+  // E3 = CHIEF
+  const chief =
+    sourceSheet
+      .getRange("E3")
+      .getDisplayValue();
+
+    // E4 = DESIGNATION
+  const designation =
+    sourceSheet
+      .getRange("E4")
+      .getDisplayValue();
+
+  // PROGRAM = DATABASE!C2
+  const databaseSheet =
+    ss.getSheetByName("DATABASE");
+
+  const program =
+    databaseSheet
+      .getRange("C2")
+      .getDisplayValue()
+      .trim();
+
+  // CATEGORIES USED = B1, B3, B5
+  const categoryValues =
+    sourceSheet
+      .getRangeList(["B1", "B3", "B5"])
+      .getRanges()
+      .map(range =>
+        range.getDisplayValue().trim()
+      )
+      .filter(value => value !== "");
+
+  // Remove duplicate categories
+  const categoriesUsed =
+    [...new Set(categoryValues)].join(" ");
+
+  // SECTION BASED ON CHIEF
+  const section =
+    getPRSection_(chief);
+
+  // ============================================================
+  // OPEN DESTINATION FOLDER
+  // ============================================================
+
+  const destinationFolder =
+    DriveApp.getFolderById(
+      DESTINATION_FOLDER_ID
+    );
+
+
+  // ============================================================
+  // OPEN TEMPLATE FILE
+  // ============================================================
+
+  const templateFile =
+    DriveApp.getFileById(
+      PR_GOODS_TEMPLATE_ID
+    );
+
+
+  // ============================================================
+  // CREATE NEW FILE FROM TEMPLATE
+  // ============================================================
+
+  const timestamp =
+    Utilities.formatDate(
+      new Date(),
+      Session.getScriptTimeZone(),
+      "yyyyMMdd-HHmmss"
+    );
+
+
+    const newFileName =
+      "PR " +
+      (chief || "Generated") +
+      " " +
+      (program || "Program") +
+      " " +
+      (categoriesUsed || "Category") +
+      " " +
+      timestamp;
+
+
+  const newFile =
+    templateFile.makeCopy(
+      newFileName,
+      destinationFolder
+    );
+
+
+  // ============================================================
+  // OPEN COPIED TEMPLATE
+  // ============================================================
+
+  const prSpreadsheet =
+    SpreadsheetApp.openById(
+      newFile.getId()
+    );
+
+
+  // ============================================================
+  // ============================================================
+  //                         PR SHEET
+  // ============================================================
+  // ============================================================
+
+  const prSheet =
+    prSpreadsheet.getSheetByName(
+      PR_GOODS_TEMPLATE_SHEET_NAME
+    );
+
+
+  if (!prSheet) {
+
+    throw new Error(
+      'Template sheet "' +
+      PR_GOODS_TEMPLATE_SHEET_NAME +
+      '" was not found.'
+    );
+  }
+
+
+  // ============================================================
+  // REPLACE PR GENERAL PLACEHOLDERS
+  // ============================================================
+
+  replaceAllPlaceholdersInSheet_(
+  prSheet,
+  {
+    "{{ABC}}": abc,
+    "{{PURPOSE}}": purpose,
+    "{{CHIEF}}": chief,
+    "{{DESIGNATION}}": designation,
+    "{{SECTION}}": section
+  }
+);
+
+
+  // ============================================================
+  // FIND PR TEMPLATE ROW
+  // ============================================================
+
+  const templateInfo =
+    findPRGoodsTemplateRow_(
+      prSheet
+    );
+
+
+  if (
+    !templateInfo ||
+    !templateInfo.row
+  ) {
+
+    throw new Error(
+      "PR template row containing " +
+      "{{ITEMNO}}, {{UNIT}}, {{ITEMDESC}}, {{QTY}}, " +
+      "{{UNITCOST}}, and {{TOTALCOST}} " +
+      "was not found."
+    );
+  }
+
+
+  // ============================================================
+  // PR TEMPLATE ROW
+  // ============================================================
+
+  const templateRow =
+    templateInfo.row;
+
+  const lastCol =
+    prSheet.getLastColumn();
+
+
+  // ============================================================
+  // INSERT PR ADDITIONAL ROWS
+  // ============================================================
+
+  const prRowsToWrite =
+    prRows.length;
+
+
+  if (prRowsToWrite > 1) {
+
+    prSheet.insertRowsAfter(
+      templateRow,
+      prRowsToWrite - 1
+    );
+
+
+    const sourceRange =
+      prSheet.getRange(
+        templateRow,
+        1,
+        1,
+        lastCol
+      );
+
+
+    const targetRange =
+      prSheet.getRange(
+        templateRow + 1,
+        1,
+        prRowsToWrite - 1,
+        lastCol
+      );
+
+
+    // COPY FORMATTING
+    sourceRange.copyTo(
+      targetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false
+    );
+
+
+    // COPY FORMULAS
+    sourceRange.copyTo(
+      targetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMULA,
+      false
+    );
+  }
+
+
+  // ============================================================
+  // WRITE PR ITEMS / HEADERS
+  // ============================================================
+
+  let itemCounter = 0;
+
+
+  for (
+    let i = 0;
+    i < prRows.length;
+    i++
+  ) {
+
+    const targetRow =
+      templateRow + i;
+
+    const row =
+      prRows[i];
+
+
+    // ----------------------------------------------------------
+    // SOURCE VALUES
+    // ----------------------------------------------------------
+
+    const unit =
+      row[0];
+
+    const itemDesc =
+      row[1];
+
+    const qty =
+      row[2];
+
+    const unitCost =
+      row[3];
+
+    const totalCost =
+      row[4];
+
+
+    // ----------------------------------------------------------
+    // DETERMINE HEADER / TITLE
+    // ----------------------------------------------------------
+
+    const isHeader =
+      isBlank_(qty) &&
+      isBlank_(totalCost);
+
+
+    // ==========================================================
+    // TITLE / HEADER ROW
+    // ==========================================================
+
+    if (isHeader) {
+
+      clearPRGoodsTemplateRow_(
+        prSheet,
+        targetRow,
+        templateInfo
+      );
+
+
+      if (templateInfo.itemDescCol) {
+
+        const titleCell =
+          prSheet.getRange(
+            targetRow,
+            templateInfo.itemDescCol
+          );
+
+
+        titleCell.setValue(
+          itemDesc
+        );
+
+
+        titleCell.setFontWeight(
+          "bold"
+        );
+
+
+        titleCell.setHorizontalAlignment(
+          "center"
+        );
+
+
+        titleCell.setVerticalAlignment(
+          "middle"
+        );
+      }
+
+
+      prSheet
+        .getRange(
+          targetRow,
+          1,
+          1,
+          lastCol
+        )
+        .setFontWeight(
+          "bold"
+        );
+
+
+      continue;
+    }
+
+
+    // ==========================================================
+    // NORMAL PR ITEM
+    // ==========================================================
+
+    itemCounter++;
+
+
+    // ITEM NO.
+    if (templateInfo.itemNoCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.itemNoCol
+        )
+        .setValue(
+          itemCounter
+        );
+    }
+
+
+    // UNIT
+    if (templateInfo.unitCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.unitCol
+        )
+        .setValue(
+          unit
+        );
+    }
+
+
+    // ITEM DESCRIPTION
+    if (templateInfo.itemDescCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.itemDescCol
+        )
+        .setValue(
+          itemDesc
+        );
+    }
+
+
+    // QUANTITY
+    if (templateInfo.qtyCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.qtyCol
+        )
+        .setValue(
+          qty
+        );
+    }
+
+
+    // UNIT COST
+    if (templateInfo.unitCostCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.unitCostCol
+        )
+        .setValue(
+          unitCost
+        );
+    }
+
+
+    // TOTAL COST
+    if (templateInfo.totalCostCol) {
+
+      prSheet
+        .getRange(
+          targetRow,
+          templateInfo.totalCostCol
+        )
+        .setValue(
+          totalCost
+        );
+    }
+
+
+    // NORMAL ITEM = NOT BOLD
+    prSheet
+      .getRange(
+        targetRow,
+        1,
+        1,
+        lastCol
+      )
+      .setFontWeight(
+        "normal"
+      );
+  }
+
+
+  // ============================================================
+  // ============================================================
+  //                     SCHEDULE SHEET
+  // ============================================================
+  // ============================================================
+
+  const scheduleSheet =
+    prSpreadsheet.getSheetByName(
+      SCHEDULE_TEMPLATE_SHEET_NAME
+    );
+
+
+  if (!scheduleSheet) {
+
+    throw new Error(
+      'Template sheet "' +
+      SCHEDULE_TEMPLATE_SHEET_NAME +
+      '" was not found.'
+    );
+  }
+
+
+  // ============================================================
+  // GET SCHEDULE DATA
+  // ============================================================
+
+  /*
+    SOURCE SHEET:
+
+    I = DATE
+    J = ITEM DESCRIPTION
+    K = UNIT
+    L = QUANTITY
+  */
+
+  const scheduleRange =
+    sourceSheet.getRange(
+      8,
+      9,
+      lastRow - 7,
+      4
+    );
+
+
+  // ACTUAL VALUES
+  // Used for chronological sorting
+  const scheduleValues =
+    scheduleRange.getValues();
+
+
+  // DISPLAY VALUES
+  // Used for writing the date exactly as displayed
+  const scheduleDisplayValues =
+    scheduleRange.getDisplayValues();
+
+
+  // ============================================================
+  // BUILD DATE GROUPS
+  // ============================================================
+
+  const scheduleGroups = [];
+
+  let currentGroup = null;
+
+
+  for (
+    let i = 0;
+    i < scheduleValues.length;
+    i++
+  ) {
+
+    const valueRow =
+      scheduleValues[i];
+
+    const displayRow =
+      scheduleDisplayValues[i];
+
+
+    // Actual date value
+    const dateValue =
+      valueRow[0];
+
+    // Displayed date
+    const dateDisplay =
+      displayRow[0];
+
+    const itemDesc =
+      displayRow[1];
+
+    const unit =
+      displayRow[2];
+
+    const qty =
+      displayRow[3];
+
+
+    // ----------------------------------------------------------
+    // COMPLETELY EMPTY ROW
+    // ----------------------------------------------------------
+
+    const completelyEmpty =
+      isBlank_(dateDisplay) &&
+      isBlank_(itemDesc) &&
+      isBlank_(unit) &&
+      isBlank_(qty);
+
+
+    if (completelyEmpty) {
+      continue;
+    }
+
+
+    // ----------------------------------------------------------
+    // NEW DATE = NEW GROUP
+    // ----------------------------------------------------------
+
+    if (!isBlank_(dateDisplay)) {
+
+      currentGroup = {
+
+        // Actual date used ONLY for sorting
+        sortDate: dateValue,
+
+        // Original displayed date used for output
+        dateDisplay: dateDisplay,
+
+        rows: []
+
+      };
+
+
+      scheduleGroups.push(
+        currentGroup
+      );
+
+
+      // --------------------------------------------------------
+      // ADD HEADER / TRAINING ROW
+      // --------------------------------------------------------
+
+      currentGroup.rows.push({
+
+        dateDisplay: dateDisplay,
+
+        itemDesc: itemDesc,
+
+        unit: unit,
+
+        qty: qty,
+
+        isHeader: true
+
+      });
+
+
+      continue;
+    }
+
+
+    // ----------------------------------------------------------
+    // ROW WITHOUT DATE
+    // BELONGS TO PREVIOUS DATE GROUP
+    // ----------------------------------------------------------
+
+    if (currentGroup) {
+
+      currentGroup.rows.push({
+
+        dateDisplay: "",
+
+        itemDesc: itemDesc,
+
+        unit: unit,
+
+        qty: qty,
+
+        isHeader: false
+
+      });
+    }
+  }
+
+
+  // ============================================================
+  // SORT GROUPS CHRONOLOGICALLY
+  // ============================================================
+
+  scheduleGroups.sort(
+    (a, b) => {
+
+      return getDateValue_(a.sortDate) -
+             getDateValue_(b.sortDate);
+
+    }
+  );
+
+
+  // ============================================================
+  // FLATTEN SORTED GROUPS
+  // ============================================================
+
+  const sortedScheduleRows = [];
+
+
+  scheduleGroups.forEach(
+    group => {
+
+      group.rows.forEach(
+        row => {
+
+          sortedScheduleRows.push(
+            row
+          );
+
+        }
+      );
+
+    }
+  );
+
+
+  // ============================================================
+  // CHECK SCHEDULE DATA
+  // ============================================================
+
+  if (
+    sortedScheduleRows.length === 0
+  ) {
+
+    throw new Error(
+      "No valid Schedule data found in columns I:L starting from row 8."
+    );
+  }
+
+
+  // ============================================================
+  // FIND SCHEDULE TEMPLATE ROW
+  // ============================================================
+
+  const scheduleTemplateInfo =
+    findScheduleTemplateRow_(
+      scheduleSheet
+    );
+
+
+  if (
+    !scheduleTemplateInfo ||
+    !scheduleTemplateInfo.row
+  ) {
+
+    throw new Error(
+      "Schedule template row containing " +
+      "{{DATE}}, {{ITEM DESC}}, {{UNIT}}, and {{QTY}} " +
+      "was not found."
+    );
+  }
+
+
+  // ============================================================
+  // SCHEDULE TEMPLATE ROW
+  // ============================================================
+
+  const scheduleTemplateRow =
+    scheduleTemplateInfo.row;
+
+  const scheduleLastCol =
+    scheduleSheet.getLastColumn();
+
+
+  // ============================================================
+  // INSERT ADDITIONAL SCHEDULE ROWS
+  // ============================================================
+
+  const scheduleRowsToWrite =
+    sortedScheduleRows.length;
+
+
+  if (
+    scheduleRowsToWrite > 1
+  ) {
+
+    scheduleSheet.insertRowsAfter(
+      scheduleTemplateRow,
+      scheduleRowsToWrite - 1
+    );
+
+
+    const scheduleSourceRange =
+      scheduleSheet.getRange(
+        scheduleTemplateRow,
+        1,
+        1,
+        scheduleLastCol
+      );
+
+
+    const scheduleTargetRange =
+      scheduleSheet.getRange(
+        scheduleTemplateRow + 1,
+        1,
+        scheduleRowsToWrite - 1,
+        scheduleLastCol
+      );
+
+
+    // COPY FORMATTING
+    scheduleSourceRange.copyTo(
+      scheduleTargetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false
+    );
+
+
+    // COPY FORMULAS
+    scheduleSourceRange.copyTo(
+      scheduleTargetRange,
+      SpreadsheetApp.CopyPasteType.PASTE_FORMULA,
+      false
+    );
+  }
+
+
+    // ============================================================
+  // WRITE SORTED SCHEDULE
+  // ============================================================
+
+  for (
+    let i = 0;
+    i < sortedScheduleRows.length;
+    i++
+  ) {
+
+    const targetRow =
+      scheduleTemplateRow + i;
+
+    const row =
+      sortedScheduleRows[i];
+
+
+    // ==========================================================
+    // DATE
+    // ==========================================================
+
+    if (
+      scheduleTemplateInfo.dateCol
+    ) {
+
+      const dateCell =
+        scheduleSheet.getRange(
+          targetRow,
+          scheduleTemplateInfo.dateCol
+        );
+
+
+      if (row.isHeader) {
+
+        // IMPORTANT:
+        // Use the DISPLAYED date from the source.
+        // This prevents March 18 from becoming March 17,
+        // April 16 from becoming April 15, etc.
+        dateCell.setValue(
+          row.dateDisplay
+        );
+
+      } else {
+
+        dateCell.clearContent();
+
+      }
+
+    } // <-- THIS WAS MISSING
+
+
+    // ==========================================================
+    // ITEM DESCRIPTION
+    // ==========================================================
+
+    if (
+      scheduleTemplateInfo.itemDescCol
+    ) {
+
+      scheduleSheet
+        .getRange(
+          targetRow,
+          scheduleTemplateInfo.itemDescCol
+        )
+        .setValue(
+          row.itemDesc
+        );
+    }
+
+
+    // ==========================================================
+    // UNIT
+    // ==========================================================
+
+    if (
+      scheduleTemplateInfo.unitCol
+    ) {
+
+      scheduleSheet
+        .getRange(
+          targetRow,
+          scheduleTemplateInfo.unitCol
+        )
+        .setValue(
+          row.unit
+        );
+    }
+
+
+    // ==========================================================
+    // QUANTITY
+    // ==========================================================
+
+    if (
+      scheduleTemplateInfo.qtyCol
+    ) {
+
+      scheduleSheet
+        .getRange(
+          targetRow,
+          scheduleTemplateInfo.qtyCol
+        )
+        .setValue(
+          row.qty
+        );
+    }
+
+
+    // ==========================================================
+    // HEADER FORMATTING
+    // ==========================================================
+
+    if (row.isHeader) {
+
+      scheduleSheet
+        .getRange(
+          targetRow,
+          1,
+          1,
+          scheduleLastCol
+        )
+        .setFontWeight(
+          "bold"
+        );
+
+    } else {
+
+      scheduleSheet
+        .getRange(
+          targetRow,
+          1,
+          1,
+          scheduleLastCol
+        )
+        .setFontWeight(
+          "normal"
+        );
+    }
+  }
+
+
+  // ============================================================
+  // FLUSH CHANGES
+  // ============================================================
+
+  SpreadsheetApp.flush();
+
+  // CLEAR INPUT VALUES AFTER GENERATION
+  sourceSheet.getRangeList([
+    "B1", "B3", "B5",
+    "E1", "E3"
+  ]).clearContent();
+
+
+  // ============================================================
+  // SUCCESS MESSAGE
+  // ============================================================
+
+  SpreadsheetApp.getUi().alert(
+
+    "PR GOODS WITH SCHEDULE GENERATED." +
+
+    "\n\nFile: " +
+    newFile.getName() +
+
+    "\nFolder: " +
+    destinationFolder.getName() +
+
+    "\n\nPR Sheet: " +
+    PR_GOODS_TEMPLATE_SHEET_NAME +
+
+    "\nPR Items: " +
+    itemCounter +
+
+    "\nPR Headers: " +
+    (prRows.length - itemCounter) +
+
+    "\n\nSchedule Sheet: " +
+    SCHEDULE_TEMPLATE_SHEET_NAME +
+
+    "\nSchedule Rows: " +
+    sortedScheduleRows.length
+
+  );
+}
+
+
+// ================================================================
+// GET SECTION BASED ON CHIEF
+// ================================================================
+
+function getPRSection_(chief) {
+
+  const name =
+    String(chief || "")
+      .trim()
+      .toUpperCase();
+
+
+  if (name === "EFREN C. MACARIO") {
+    return "AFU";
+  }
+
+
+  if (name === "HONEYLOU C. BASTASA") {
+    return "ISS";
+  }
+
+
+  if (name === "JERIC L. CABATAC") {
+    return "PAS";
+  }
+
+
+  if (name === "JHOYLIE MAE R. CAUMBAN") {
+    return "CDMS";
+  }
+
+
+  return "";
+}
+
+
+// ================================================================
+// FIND PR TEMPLATE ITEM ROW
+// ================================================================
+
+function findPRGoodsTemplateRow_(sheet) {
+
+  const values =
+    sheet
+      .getDataRange()
+      .getDisplayValues();
+
+
+  for (
+    let r = 0;
+    r < values.length;
+    r++
+  ) {
+
+    const row =
+      values[r];
+
+
+    const info = {
+      row: r + 1
+    };
+
+
+    for (
+      let c = 0;
+      c < row.length;
+      c++
+    ) {
+
+      const text =
+        String(
+          row[c] || ""
+        );
+
+
+      // ITEM NO.
+      if (
+        text.indexOf(
+          "{{ITEMNO}}"
+        ) !== -1
+      ) {
+
+        info.itemNoCol =
+          c + 1;
+      }
+
+
+      // UNIT
+      if (
+        text.indexOf(
+          "{{UNIT}}"
+        ) !== -1
+      ) {
+
+        info.unitCol =
+          c + 1;
+      }
+
+
+      // ITEM DESCRIPTION
+      if (
+        text.indexOf(
+          "{{ITEMDESC}}"
+        ) !== -1
+      ) {
+
+        info.itemDescCol =
+          c + 1;
+      }
+
+
+      // QUANTITY
+      if (
+        text.indexOf(
+          "{{QTY}}"
+        ) !== -1
+      ) {
+
+        info.qtyCol =
+          c + 1;
+      }
+
+
+      // UNIT COST
+      if (
+        text.indexOf(
+          "{{UNITCOST}}"
+        ) !== -1
+      ) {
+
+        info.unitCostCol =
+          c + 1;
+      }
+
+
+      // TOTAL COST
+      if (
+        text.indexOf(
+          "{{TOTALCOST}}"
+        ) !== -1
+      ) {
+
+        info.totalCostCol =
+          c + 1;
+      }
+    }
+
+
+    if (
+      info.itemNoCol ||
+      info.unitCol ||
+      info.itemDescCol ||
+      info.qtyCol ||
+      info.unitCostCol ||
+      info.totalCostCol
+    ) {
+
+      return info;
+    }
+  }
+
+
+  return null;
+}
+
+
+// ================================================================
+// FIND SCHEDULE TEMPLATE ROW
+// ================================================================
+
+function findScheduleTemplateRow_(sheet) {
+
+  const values =
+    sheet
+      .getDataRange()
+      .getDisplayValues();
+
+
+  for (
+    let r = 0;
+    r < values.length;
+    r++
+  ) {
+
+    const row =
+      values[r];
+
+
+    const info = {
+      row: r + 1
+    };
+
+
+    for (
+      let c = 0;
+      c < row.length;
+      c++
+    ) {
+
+      const text =
+        String(
+          row[c] || ""
+        );
+
+
+      // DATE
+      if (
+        text.indexOf(
+          "{{DATE}}"
+        ) !== -1
+      ) {
+
+        info.dateCol =
+          c + 1;
+      }
+
+
+      // ITEM DESCRIPTION
+      if (
+        text.indexOf(
+          "{{ITEM DESC}}"
+        ) !== -1
+      ) {
+
+        info.itemDescCol =
+          c + 1;
+      }
+
+
+      // UNIT
+      if (
+        text.indexOf(
+          "{{UNIT}}"
+        ) !== -1
+      ) {
+
+        info.unitCol =
+          c + 1;
+      }
+
+
+      // QUANTITY
+      if (
+        text.indexOf(
+          "{{QTY}}"
+        ) !== -1
+      ) {
+
+        info.qtyCol =
+          c + 1;
+      }
+    }
+
+
+    // Require all four placeholders
+    if (
+      info.dateCol &&
+      info.itemDescCol &&
+      info.unitCol &&
+      info.qtyCol
+    ) {
+
+      return info;
+    }
+  }
+
+
+  return null;
+}
+
+
+// ================================================================
+// CLEAR PR TEMPLATE ROW
+// ================================================================
+
+function clearPRGoodsTemplateRow_(
+  sheet,
+  rowNumber,
+  cols
+) {
+
+  const columns = [
+
+    cols.itemNoCol,
+    cols.unitCol,
+    cols.itemDescCol,
+    cols.qtyCol,
+    cols.unitCostCol,
+    cols.totalCostCol
+
+  ];
+
+
+  columns.forEach(col => {
+
+    if (col) {
+
+      sheet
+        .getRange(
+          rowNumber,
+          col
+        )
+        .clearContent();
+    }
+
+  });
+}
+
+
+// ================================================================
+// CHECK IF VALUE IS BLANK
+// ================================================================
+
+function isBlank_(value) {
+
+  return (
+    value === "" ||
+    value === null ||
+    value === undefined
+  );
+}
+
+
+// ================================================================
+// CONVERT DATE TO SORTABLE VALUE
+// ================================================================
+
+function getDateValue_(value) {
+
+  // Already a real Google Sheets date
+  if (value instanceof Date) {
+
+    return value.getTime();
+  }
+
+
+  // Blank date
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+
+  // Try converting text to date
+  const parsed =
+    new Date(value);
+
+
+  if (
+    !isNaN(
+      parsed.getTime()
+    )
+  ) {
+
+    return parsed.getTime();
+  }
+
+
+  // Invalid dates go to the bottom
+  return Number.MAX_SAFE_INTEGER;
+}
+
+
+// ================================================================
+// REPLACE GENERAL PLACEHOLDERS
+// ================================================================
+
+function replaceAllPlaceholdersInSheet_(
+  sheet,
+  replacements
+) {
+
+  const range =
+    sheet.getDataRange();
+
+
+  const values =
+    range.getDisplayValues();
+
+
+  for (
+    let r = 0;
+    r < values.length;
+    r++
+  ) {
+
+    for (
+      let c = 0;
+      c < values[r].length;
+      c++
+    ) {
+
+      let cellValue =
+        values[r][c];
+
+
+      if (!cellValue) {
+        continue;
+      }
+
+
+      let newValue =
+        cellValue;
+
+
+      let changed =
+        false;
+
+
+      for (
+        const key in replacements
+      ) {
+
+        if (
+          newValue.indexOf(key) !== -1
+        ) {
+
+          newValue =
+            newValue
+              .split(key)
+              .join(
+                String(
+                  replacements[key] ?? ""
+                )
+              );
+
+
+          changed =
+            true;
+        }
+      }
+
+
+      if (changed) {
+
+        sheet
+          .getRange(
+            r + 1,
+            c + 1
+          )
+          .setValue(
+            newValue
+          );
+      }
+    }
+  }
+}
